@@ -11,9 +11,9 @@ import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 /* ============================================================ state & layer config */
 
 const state = {
-  sizeMeters: 500,   // side length of the selection square
+  sizeMeters: 1000,  // side length of the selection square
   model: null,       // THREE.Group of the last generated model
-  modelName: 'map',
+  modelName: 'queens-parade-ashwood',
   last: null,        // cached fetch: {bbox, elements, sampleElev, minElev}
 };
 
@@ -46,8 +46,8 @@ const $ = (id) => document.getElementById(id);
 const map = new maplibregl.Map({
   container: 'map',
   style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-  center: [151.2153, -33.8568],   // Sydney
-  zoom: 14,
+  center: [145.0960, -37.8695],   // Queens Parade, Ashwood VIC
+  zoom: 15,
   attributionControl: { compact: true },
 });
 map.addControl(new maplibregl.NavigationControl(), 'top-right');
