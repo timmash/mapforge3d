@@ -21,7 +21,7 @@ const state = {
 const cfg = {
   terrain:    { on: true,  color: '#5e7d5a', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#3a4048', metal: 0.0,  rough: 1.0,  depth: 12 },
-  buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain' },
+  buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.5 },
   minorRoads: { on: true,  color: '#3a4353', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.4 },
   paths:      { on: true,  color: '#55606f', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.3 },
@@ -201,6 +201,8 @@ async function fetchOSM(bbox) {
   const parts = [
     `way["building"](${bb});`,
     `relation["building"]["type"="multipolygon"](${bb});`,
+    `node["addr:housenumber"](${bb});`,
+    `node["building"](${bb});`,
     `way["highway"](${bb});`,
     `way["natural"="water"](${bb});`,
     `relation["natural"="water"]["type"="multipolygon"](${bb});`,
@@ -440,13 +442,25 @@ function buildTerrainBlock(groundAt) {
 
 /* ---------- buildings */
 
+// Ray-casting point-in-polygon test.
+function pointInRing(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
 function buildBuildings(elements, project, groundAt, half) {
   const c = cfg.buildings;
   const group = new THREE.Group();
   group.name = 'buildings';
+  const footprints = []; // unclipped projected outer rings, used to detect mapped buildings
   const polys = collectPolygons(elements, t => t['building'] !== undefined);
   for (const poly of polys) {
     try {
+      footprints.push(ringFromGeometry(poly.outer, project));
       const rings = clippedRings(poly, project, half);
       if (!rings) continue;
       let h = taggedHeight(poly.tags);
@@ -466,6 +480,41 @@ function buildBuildings(elements, project, groundAt, half) {
       mesh.position.y = Math.max(0, ground) - 1.5;
       group.add(mesh);
     } catch (e) { /* skip malformed footprints */ }
+  }
+
+  // Unmapped buildings: place a default box at OSM address / building nodes
+  // that have no building outline (way) drawn yet.
+  if (c.nodes) {
+    const seen = new Set();
+    const cell = Math.max(2, c.nodeSize * 0.8);
+    for (const el of elements) {
+      if (el.type !== 'node' || !el.tags) continue;
+      if (el.tags['addr:housenumber'] === undefined && el.tags['building'] === undefined) continue;
+      if (el.lat === undefined || el.lon === undefined) continue;
+      const [x, y] = project(el.lat, el.lon);
+      if (Math.abs(x) > half || Math.abs(y) > half) continue;
+      // skip nodes that fall inside an already-mapped building footprint
+      let covered = false;
+      for (const ring of footprints) {
+        if (pointInRing(x, y, ring)) { covered = true; break; }
+      }
+      if (covered) continue;
+      // dedupe clusters of address nodes (e.g. multiple units on one lot)
+      const key = Math.round(x / cell) + ':' + Math.round(y / cell);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let h = taggedHeight(el.tags);
+      h = (h === null ? c.defH : h) * c.scale + c.extra;
+      h = Math.max(h, c.minH, 1);
+      const s = c.nodeSize;
+      // keep the box fully inside the selection square
+      const bx = Math.max(-half + s / 2, Math.min(half - s / 2, x));
+      const by = Math.max(-half + s / 2, Math.min(half - s / 2, y));
+      const ground = groundAt(bx, by);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(s, h, s), MATS.buildings);
+      mesh.position.set(bx, Math.max(0, ground) - 1.5 + h / 2, -by);
+      group.add(mesh);
+    }
   }
   return group;
 }
@@ -765,58 +814,52 @@ $('generateBtn').addEventListener('click', generate);
 const INSPECTOR = [
   { key: 'buildings', label: 'Buildings', toggle: true, items: [
     ['color', 'Colour', 'color'],
+    ['nodes', 'Unmapped buildings (address nodes)', 'check'],
+    ['nodeSize', 'Unmapped box size (m)', 'range', 4, 30, 1],
     ['defH', 'Default height (m)', 'range', 2, 40, 1],
     ['scale', 'Height scale', 'range', 0.2, 3, 0.05],
     ['extra', 'Extra height (m)', 'range', 0, 40, 1],
     ['minH', 'Minimum height (m)', 'range', 0, 30, 1],
     ['fit', 'Ground fit', 'select', [['terrain', 'Follow terrain'], ['flat', 'Flat (lowest point)']]],
-    ['metal', 'Metallic', 'range', 0, 1, 0.01],
     ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'majorRoads', label: 'Major roads', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['widthScale', 'Width scale', 'range', 0.2, 3, 0.05],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['metal', 'Metallic', 'range', 0, 1, 0.01],
     ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'minorRoads', label: 'Minor roads', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['widthScale', 'Width scale', 'range', 0.2, 3, 0.05],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['metal', 'Metallic', 'range', 0, 1, 0.01],
     ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'paths', label: 'Paths & tracks', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['widthScale', 'Width scale', 'range', 0.2, 3, 0.05],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['metal', 'Metallic', 'range', 0, 1, 0.01],
     ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'green', label: 'Green space', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['metal', 'Metallic', 'range', 0, 1, 0.01],
     ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'water', label: 'Water', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['metal', 'Metallic', 'range', 0, 1, 0.01],
     ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'terrain', label: 'Terrain elevation', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['exag', 'Vertical exaggeration', 'range', 0, 3, 0.05],
     ['res', 'Level of detail', 'range', 32, 160, 16],
-    ['metal', 'Metallic', 'range', 0, 1, 0.01],
     ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'base', label: 'Base block', toggle: false, items: [
     ['color', 'Colour', 'color'],
     ['depth', 'Base depth (m)', 'range', 1, 100, 1],
-    ['metal', 'Metallic', 'range', 0, 1, 0.01],
     ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
 ];
@@ -896,6 +939,16 @@ function buildInspectorUI() {
           sw.style.background = inp.value;
           applyMaterial(layer.key);
         });
+        row.appendChild(inp);
+      } else if (kind === 'check') {
+        const inp = document.createElement('input');
+        inp.type = 'checkbox';
+        inp.checked = !!c[prop];
+        inp.style.accentColor = '#4f8cff';
+        inp.style.width = '15px';
+        inp.style.height = '15px';
+        inp.style.cursor = 'pointer';
+        inp.addEventListener('change', () => { c[prop] = inp.checked; scheduleRebuild(); });
         row.appendChild(inp);
       } else if (kind === 'select') {
         const sel = document.createElement('select');
