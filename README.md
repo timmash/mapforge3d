@@ -10,8 +10,9 @@ Everything runs in your browser — there is no backend.
 
 1. Search for a place (or pan the map) and pick an area size (250 m – 2 km).
 2. **Generate** fetches building footprints, roads and water from [OpenStreetMap](https://www.openstreetmap.org) via the Overpass API, and real elevation from the open [Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) dataset on AWS.
-3. The model is built with [three.js](https://threejs.org): a solid terrain block with a plinth, extruded buildings (real heights where OSM has them), road ribbons draped on the terrain, and water surfaces.
-4. Export as:
+3. The model is built with [three.js](https://threejs.org): a solid terrain block with a plinth, extruded buildings (real heights where OSM has them), road ribbons draped on the terrain, green space, and water surfaces. Every layer is clipped exactly to the selection boundary.
+4. Each layer has an inspector (click its name): colour, metallic and roughness apply instantly; building default/extra/minimum height, height scale and ground fit, road width scale and lift, terrain vertical exaggeration and level of detail, and base depth all rebuild the model live from cached data — no refetch needed.
+5. Export as:
    - **.GLB** (binary glTF) — real-world metres; opens in Blender, and most modern 3D tools
    - **.STL** — pre-scaled to 200 mm across, ready for a 3D-printer slicer
    - **.OBJ** — universally supported (Rhino, SketchUp Pro, Maya, …)

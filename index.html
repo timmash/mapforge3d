@@ -118,16 +118,35 @@
     border-color: var(--accent);
     color: #fff;
   }
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 0;
-    font-size: 13px;
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+  /* ---------- layer inspector ---------- */
+  .layer { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; overflow: hidden; }
+  .layer-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; font-size: 13px; cursor: pointer;
+    background: var(--panel2);
   }
-  .toggle-row label { cursor: pointer; display: flex; align-items: center; gap: 8px; }
-  .toggle-row input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
-  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .layer-head:hover { background: #242e3c; }
+  .layer-head input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; flex: none; }
+  .cb-spacer { width: 15px; flex: none; }
+  .layer-name { flex: 1; }
+  .chev { color: var(--muted); font-size: 11px; }
+  .layer-body { padding: 8px 10px 10px; border-top: 1px solid var(--border); }
+  .ctl-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 0; font-size: 12px;
+  }
+  .ctl-row label { flex: 0 0 118px; color: var(--muted); }
+  .ctl-row input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 0; }
+  .ctl-row input[type="color"] {
+    width: 40px; height: 22px; padding: 0; border: 1px solid var(--border);
+    border-radius: 4px; background: none; cursor: pointer;
+  }
+  .ctl-row select {
+    flex: 1; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px;
+  }
+  .ctl-val { flex: 0 0 34px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
   .export-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .export-grid button { font-weight: 600; }
   .hint { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
@@ -238,18 +257,8 @@
 
     <div class="section">
       <h2>3 · Layers</h2>
-      <div class="toggle-row">
-        <label><input type="checkbox" id="lyrBuildings" checked><span class="swatch" style="background:#c9d4e4"></span> Buildings</label>
-      </div>
-      <div class="toggle-row">
-        <label><input type="checkbox" id="lyrTerrain" checked><span class="swatch" style="background:#5e7d5a"></span> Terrain elevation</label>
-      </div>
-      <div class="toggle-row">
-        <label><input type="checkbox" id="lyrRoads" checked><span class="swatch" style="background:#3a4353"></span> Roads</label>
-      </div>
-      <div class="toggle-row">
-        <label><input type="checkbox" id="lyrWater" checked><span class="swatch" style="background:#3d6fa8"></span> Water</label>
-      </div>
+      <div id="layersUI"></div>
+      <p class="hint">Tick to include a layer. Click a layer name to open its inspector — colours apply instantly; heights, widths and terrain settings rebuild the model live.</p>
     </div>
 
     <div class="section">
