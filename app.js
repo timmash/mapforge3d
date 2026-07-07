@@ -36,6 +36,7 @@ for (const key of Object.keys(cfg)) {
     color: new THREE.Color(cfg[key].color),
     metalness: cfg[key].metal,
     roughness: cfg[key].rough,
+    side: THREE.DoubleSide,
   });
 }
 
@@ -354,6 +355,30 @@ function collectPolygons(elements, match) {
   return polys;
 }
 
+// Insert interpolated points so long edges follow the terrain when draped.
+function densifyRing(ring, maxLen) {
+  const out = [];
+  for (let i = 0; i < ring.length; i++) {
+    const [x1, y1] = ring[i], [x2, y2] = ring[(i + 1) % ring.length];
+    out.push([x1, y1]);
+    const d = Math.hypot(x2 - x1, y2 - y1);
+    const steps = Math.ceil(d / maxLen);
+    for (let s = 1; s < steps; s++) out.push([x1 + (x2 - x1) * s / steps, y1 + (y2 - y1) * s / steps]);
+  }
+  return out;
+}
+
+function densifyLine(pts, maxLen) {
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const [x1, y1] = pts[i - 1], [x2, y2] = pts[i];
+    const d = Math.hypot(x2 - x1, y2 - y1);
+    const steps = Math.max(1, Math.ceil(d / maxLen));
+    for (let s = 1; s <= steps; s++) out.push([x1 + (x2 - x1) * s / steps, y1 + (y2 - y1) * s / steps]);
+  }
+  return out;
+}
+
 // Project → clip to the square → normalise winding. Returns {outer, holes} or null.
 function clippedRings(poly, project, half) {
   let outer = clipRingToSquare(ringFromGeometry(poly.outer, project), half);
@@ -466,18 +491,21 @@ function buildBuildings(elements, project, groundAt, half) {
       let h = taggedHeight(poly.tags);
       h = (h === null ? c.defH : h) * c.scale + c.extra;
       h = Math.max(h, c.minH, 1);
-      const geo = new THREE.ExtrudeGeometry(shapeFromRings(rings.outer, rings.holes), { depth: h, bevelEnabled: false });
-      geo.rotateX(-Math.PI / 2);
+      // ground reference + how far the base must sink to sit into the terrain everywhere
+      let minG = Infinity;
+      for (const [x, y] of rings.outer) minG = Math.min(minG, groundAt(x, y));
       let ground;
       if (c.fit === 'flat') {
-        ground = Infinity;
-        for (const [x, y] of rings.outer) ground = Math.min(ground, groundAt(x, y));
+        ground = minG;
       } else {
         const [cx, cy] = centroidOf(rings.outer);
         ground = groundAt(cx, cy);
       }
+      const sink = Math.max(1.5, ground - minG + 0.5);
+      const geo = new THREE.ExtrudeGeometry(shapeFromRings(rings.outer, rings.holes), { depth: h + sink, bevelEnabled: false });
+      geo.rotateX(-Math.PI / 2);
       const mesh = new THREE.Mesh(geo, MATS.buildings);
-      mesh.position.y = Math.max(0, ground) - 1.5;
+      mesh.position.y = ground - sink; // top ends up at ground + h, base below the lowest corner
       group.add(mesh);
     } catch (e) { /* skip malformed footprints */ }
   }
@@ -511,8 +539,13 @@ function buildBuildings(elements, project, groundAt, half) {
       const bx = Math.max(-half + s / 2, Math.min(half - s / 2, x));
       const by = Math.max(-half + s / 2, Math.min(half - s / 2, y));
       const ground = groundAt(bx, by);
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(s, h, s), MATS.buildings);
-      mesh.position.set(bx, Math.max(0, ground) - 1.5 + h / 2, -by);
+      let minG = ground;
+      for (const [ox, oy] of [[-s / 2, -s / 2], [s / 2, -s / 2], [-s / 2, s / 2], [s / 2, s / 2]]) {
+        minG = Math.min(minG, groundAt(bx + ox, by + oy));
+      }
+      const sink = Math.max(1.0, ground - minG + 0.5);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(s, h + sink, s), MATS.buildings);
+      mesh.position.set(bx, ground - sink + (h + sink) / 2, -by); // top at ground + h
       group.add(mesh);
     }
   }
@@ -547,9 +580,12 @@ function buildRoadClass(elements, project, groundAt, half, layerKey) {
     if (roadClass(kind) !== layerKey) continue;
     const width = (ROAD_WIDTHS[kind] || 5) * c.widthScale;
     const runs = clipLineToSquare(ringFromGeometry(el.geometry, project), half);
-    for (const pts of runs) {
-      if (pts.length < 2) continue;
+    const EMBED = 1.0; // how far the ribbon's underside sinks into the terrain
+    for (const rawPts of runs) {
+      if (rawPts.length < 2) continue;
+      const pts = densifyLine(rawPts, 12); // follow the terrain closely
       const positions = [], indices = [];
+      const cl = v => Math.max(-half, Math.min(half, v));
       for (let i = 0; i < pts.length; i++) {
         const [x, y] = pts[i];
         const [xp, yp] = pts[Math.max(0, i - 1)];
@@ -558,16 +594,26 @@ function buildRoadClass(elements, project, groundAt, half, layerKey) {
         const len = Math.hypot(dx, dy) || 1;
         dx /= len; dy /= len;
         const nx = -dy, ny = dx;
-        // clamp ribbon edges to the square so widths don't spill over
-        const cl = v => Math.max(-half, Math.min(half, v));
-        const h = groundAt(x, y) + c.lift;
-        positions.push(cl(x + nx * width / 2), h, -cl(y + ny * width / 2));
-        positions.push(cl(x - nx * width / 2), h, -cl(y - ny * width / 2));
+        const lx = cl(x + nx * width / 2), ly = cl(y + ny * width / 2);
+        const rx = cl(x - nx * width / 2), ry = cl(y - ny * width / 2);
+        const gl = groundAt(lx, ly), gr = groundAt(rx, ry);
+        // 4 vertices per cross-section: top-left, top-right, bottom-left, bottom-right
+        positions.push(lx, gl + c.lift, -ly);
+        positions.push(rx, gr + c.lift, -ry);
+        positions.push(lx, gl - EMBED, -ly);
+        positions.push(rx, gr - EMBED, -ry);
         if (i > 0) {
-          const a = (i - 1) * 2, b = a + 1, cc = i * 2, d = cc + 1;
-          indices.push(a, b, cc, b, d, cc);
+          const p = (i - 1) * 4, s = i * 4;
+          indices.push(p, p + 1, s,  p + 1, s + 1, s);         // top
+          indices.push(p + 2, s + 2, p + 3,  p + 3, s + 2, s + 3); // bottom
+          indices.push(p, s, p + 2,  s, s + 2, p + 2);         // left wall
+          indices.push(p + 1, p + 3, s + 1,  s + 1, p + 3, s + 3); // right wall
         }
       }
+      // end caps
+      const last = (pts.length - 1) * 4;
+      indices.push(0, 2, 1,  1, 2, 3);
+      indices.push(last, last + 1, last + 2,  last + 1, last + 3, last + 2);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       geo.setIndex(indices);
@@ -589,6 +635,7 @@ const WATER_MATCH = t => t['natural'] === 'water' || t['waterway'] === 'riverban
 
 function buildFlatPolys(elements, project, groundAt, half, layerKey, match) {
   const c = cfg[layerKey];
+  const DEPTH = 1.5; // how far the slab's underside sinks into the terrain
   const group = new THREE.Group();
   group.name = layerKey;
   const polys = collectPolygons(elements, match);
@@ -596,13 +643,48 @@ function buildFlatPolys(elements, project, groundAt, half, layerKey, match) {
     try {
       const rings = clippedRings(poly, project, half);
       if (!rings) continue;
-      const geo = new THREE.ShapeGeometry(shapeFromRings(rings.outer, rings.holes));
-      geo.rotateX(-Math.PI / 2);
-      let minG = Infinity;
-      for (const [x, y] of rings.outer) minG = Math.min(minG, groundAt(x, y));
-      const mesh = new THREE.Mesh(geo, MATS[layerKey]);
-      mesh.position.y = Math.max(c.lift, minG + c.lift);
-      group.add(mesh);
+      const outer = densifyRing(rings.outer, 15);
+      const holes = rings.holes.map(h => densifyRing(h, 15));
+
+      // triangulate in 2D, then drape every vertex onto the terrain
+      const shapeGeo = new THREE.ShapeGeometry(shapeFromRings(outer, holes));
+      const pos = shapeGeo.getAttribute('position');
+      const idx = shapeGeo.getIndex() ? shapeGeo.getIndex().array : null;
+      if (!idx) continue;
+      const n = pos.count;
+      const positions = [], indices = [];
+      for (let i = 0; i < n; i++) {   // draped top surface
+        const x = pos.getX(i), y = pos.getY(i);
+        positions.push(x, groundAt(x, y) + c.lift, -y);
+      }
+      for (let i = 0; i < n; i++) {   // draped underside
+        const x = pos.getX(i), y = pos.getY(i);
+        positions.push(x, groundAt(x, y) - DEPTH, -y);
+      }
+      for (let t = 0; t < idx.length; t += 3) indices.push(idx[t], idx[t + 1], idx[t + 2]);
+      for (let t = 0; t < idx.length; t += 3) indices.push(n + idx[t + 2], n + idx[t + 1], n + idx[t]);
+      // side walls around the outer ring and every hole
+      const addWalls = (ring) => {
+        const base = positions.length / 3;
+        for (const [x, y] of ring) {
+          const g = groundAt(x, y);
+          positions.push(x, g + c.lift, -y);
+          positions.push(x, g - DEPTH, -y);
+        }
+        const m = ring.length;
+        for (let k = 0; k < m; k++) {
+          const a = base + k * 2, b = a + 1, cc = base + ((k + 1) % m) * 2, d = cc + 1;
+          indices.push(a, b, cc, b, d, cc);
+        }
+      };
+      addWalls(outer);
+      for (const h of holes) addWalls(h);
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      group.add(new THREE.Mesh(geo, MATS[layerKey]));
     } catch (e) { /* skip */ }
   }
   return group;
