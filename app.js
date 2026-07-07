@@ -15,35 +15,42 @@ const state = {
   model: null,       // THREE.Group of the last generated model
   modelName: 'queens-parade-ashwood',
   last: null,        // cached fetch: {bbox, elements, sampleElev, minElev}
-  mode: 'square',    // 'square' | 'council'
-  council: null,     // { name, slug, bbox, maskRings (local metres) } when mode==='council'
+  mode: 'square',    // 'square' | 'suburb'
+  council: null,     // selected area: { name, slug, bbox, maskRings } when mode==='suburb'
 };
 
-// Greater-Melbourne metropolitan councils (LGAs). areaKm2 is approximate and
-// used to keep 'council' mode to metro-sized areas the browser can handle.
-// slug matches the pre-baked file the app looks for: buildings/<slug>.buildings.json
-const COUNCILS = [
-  { name: 'Banyule', slug: 'banyule', areaKm2: 63 },
-  { name: 'Bayside', slug: 'bayside', areaKm2: 37 },
-  { name: 'Boroondara', slug: 'boroondara', areaKm2: 60 },
-  { name: 'Brimbank', slug: 'brimbank', areaKm2: 123 },
-  { name: 'Darebin', slug: 'darebin', areaKm2: 53 },
-  { name: 'Glen Eira', slug: 'glen-eira', areaKm2: 39 },
-  { name: 'Hobsons Bay', slug: 'hobsons-bay', areaKm2: 64 },
-  { name: 'Kingston', slug: 'kingston', areaKm2: 91 },
-  { name: 'Manningham', slug: 'manningham', areaKm2: 113 },
-  { name: 'Maribyrnong', slug: 'maribyrnong', areaKm2: 31 },
-  { name: 'Maroondah', slug: 'maroondah', areaKm2: 61 },
-  { name: 'Melbourne', slug: 'melbourne', areaKm2: 37 },
-  { name: 'Monash', slug: 'monash', areaKm2: 82 },
-  { name: 'Moonee Valley', slug: 'moonee-valley', areaKm2: 43 },
-  { name: 'Merri-bek', slug: 'merri-bek', areaKm2: 51 },
-  { name: 'Port Phillip', slug: 'port-phillip', areaKm2: 21 },
-  { name: 'Stonnington', slug: 'stonnington', areaKm2: 26 },
-  { name: 'Whitehorse', slug: 'whitehorse', areaKm2: 64 },
-  { name: 'Yarra', slug: 'yarra', areaKm2: 20 },
-];
-const MAX_COUNCIL_KM2 = 130; // metro cap
+// Greater-Melbourne suburbs. The slug matches the optional pre-baked footprints
+// file the app looks for: buildings/<slug>.buildings.json
+const SUBURBS = [
+  'Abbotsford','Aberfeldie','Airport West','Albert Park','Alphington','Altona','Altona Meadows','Altona North',
+  'Armadale','Ascot Vale','Ashburton','Ashwood','Aspendale','Attwood','Avondale Heights','Balaclava','Balwyn',
+  'Balwyn North','Bayswater','Beaumaris','Bellfield','Bentleigh','Bentleigh East','Berwick','Blackburn',
+  'Blackburn North','Blackburn South','Bonbeach','Boronia','Botanic Ridge','Box Hill','Box Hill North',
+  'Box Hill South','Braybrook','Brighton','Brighton East','Broadmeadows','Brooklyn','Brunswick','Brunswick East',
+  'Brunswick West','Bulleen','Bundoora','Burnley','Burwood','Burwood East','Cairnlea','Camberwell','Canterbury',
+  'Carlton','Carlton North','Carnegie','Caroline Springs','Carrum','Caulfield','Caulfield East','Caulfield North',
+  'Caulfield South','Chadstone','Cheltenham','Chelsea','Clayton','Clayton South','Clifton Hill','Coburg',
+  'Coburg North','Collingwood','Craigieburn','Cranbourne','Cremorne','Croydon','Dandenong','Dandenong North',
+  'Deer Park','Diamond Creek','Dingley Village','Docklands','Doncaster','Doncaster East','Donvale','Eaglemont',
+  'East Melbourne','Edithvale','Elsternwick','Eltham','Elwood','Emerald','Endeavour Hills','Epping','Essendon',
+  'Essendon North','Fairfield','Fawkner','Ferntree Gully','Fitzroy','Fitzroy North','Flemington','Footscray',
+  'Forest Hill','Frankston','Gardenvale','Glen Huntly','Glen Iris','Glen Waverley','Glenroy','Gowanbrae',
+  'Greensborough','Hadfield','Hampton','Hampton East','Hawthorn','Hawthorn East','Heidelberg','Heidelberg Heights',
+  'Highett','Hoppers Crossing','Hughesdale','Huntingdale','Ivanhoe','Ivanhoe East','Kealba','Keilor','Keilor East',
+  'Kensington','Kew','Kew East','Keysborough','Kings Park','Kingsbury','Kingsville','Knoxfield','Kooyong',
+  'Lalor','Laverton','Lower Plenty','Macleod','Maidstone','Malvern','Malvern East','Maribyrnong','McKinnon',
+  'Melbourne','Mentone','Mernda','Middle Park','Mill Park','Mitcham','Mont Albert','Montmorency','Moonee Ponds',
+  'Moorabbin','Mordialloc','Mount Waverley','Mulgrave','Murrumbeena','Narre Warren','Newport','Niddrie','Noble Park',
+  'North Melbourne','Northcote','Notting Hill','Nunawading','Oak Park','Oakleigh','Oakleigh East','Oakleigh South',
+  'Ormond','Pakenham','Parkdale','Parkville','Pascoe Vale','Point Cook','Port Melbourne','Prahran','Preston',
+  'Princes Hill','Reservoir','Richmond','Ringwood','Ringwood East','Ripponlea','Rosanna','Rowville','Roxburgh Park',
+  'Sandringham','Scoresby','Seaford','Seddon','South Melbourne','South Yarra','Southbank','Spotswood','Springvale',
+  'St Albans','St Kilda','St Kilda East','Strathmore','Sunbury','Sunshine','Sunshine North','Sunshine West',
+  'Surrey Hills','Templestowe','Templestowe Lower','Thomastown','Thornbury','Toorak','Truganina','Vermont',
+  'Vermont South','Viewbank','Wantirna','Wantirna South','Watsonia','Werribee','West Footscray','West Melbourne',
+  'Wheelers Hill','Williamstown','Windsor','Yarraville',
+].map(name => ({ name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }));
+const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 
 // Everything the layer inspector can change lives here.
 const cfg = {
@@ -100,7 +107,7 @@ window.addEventListener('resize', updateSelBox);
 document.querySelectorAll('.size-grid button').forEach(btn => {
   btn.addEventListener('click', () => {
     // choosing a square size returns to square mode
-    clearCouncil();
+    clearArea();
     document.querySelectorAll('.size-grid button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.sizeMeters = Number(btn.dataset.size);
@@ -108,66 +115,66 @@ document.querySelectorAll('.size-grid button').forEach(btn => {
   });
 });
 
-/* ---------- council picker ---------- */
+/* ---------- suburb picker ---------- */
 
-function drawCouncilOutline(ll) {
+function drawAreaOutline(ll) {
   const fc = { type: 'FeatureCollection', features: ll.map(r => ({
     type: 'Feature', geometry: { type: 'LineString', coordinates: r } })) };
-  if (map.getSource('council-bd')) { map.getSource('council-bd').setData(fc); return; }
-  map.addSource('council-bd', { type: 'geojson', data: fc });
-  map.addLayer({ id: 'council-bd', type: 'line', source: 'council-bd',
+  if (map.getSource('area-bd')) { map.getSource('area-bd').setData(fc); return; }
+  map.addSource('area-bd', { type: 'geojson', data: fc });
+  map.addLayer({ id: 'area-bd', type: 'line', source: 'area-bd',
     paint: { 'line-color': '#4f8cff', 'line-width': 2.5, 'line-dasharray': [2, 1] } });
 }
-function clearCouncilOutline() {
-  if (map.getLayer('council-bd')) map.removeLayer('council-bd');
-  if (map.getSource('council-bd')) map.removeSource('council-bd');
+function clearAreaOutline() {
+  if (map.getLayer('area-bd')) map.removeLayer('area-bd');
+  if (map.getSource('area-bd')) map.removeSource('area-bd');
 }
-function clearCouncil() {
+function clearArea() {
   state.mode = 'square';
   state.council = null;
-  clearCouncilOutline();
+  clearAreaOutline();
   $('selBox').style.display = 'block';
   $('councilHint').style.display = 'none';
   const sel = $('councilSelect'); if (sel) sel.value = '';
 }
 
-function initCouncilPicker() {
+function initSuburbPicker() {
   const sel = $('councilSelect');
-  for (const c of COUNCILS) {
+  for (const s of SUBURBS) {
     const o = document.createElement('option');
-    o.value = c.slug; o.textContent = 'City of ' + c.name + ` (~${c.areaKm2} km²)`;
+    o.value = s.slug; o.textContent = s.name;
     sel.appendChild(o);
   }
   sel.addEventListener('change', async () => {
     const slug = sel.value;
-    if (!slug) { clearCouncil(); updateSelBox(); return; }
-    const council = COUNCILS.find(c => c.slug === slug);
-    if (council.areaKm2 > MAX_COUNCIL_KM2) {
-      setStatus(`${council.name} (~${council.areaKm2} km²) is too large to build in the browser.`, true);
-      sel.value = ''; return;
-    }
+    if (!slug) { clearArea(); updateSelBox(); return; }
+    const suburb = SUBURBS.find(s => s.slug === slug);
     setStatus('');
-    setLoading(true, `Finding the ${council.name} boundary…`);
+    setLoading(true, `Finding the ${suburb.name} boundary…`);
     try {
-      const b = await fetchCouncilBoundary(council.name);
-      state.council = { name: council.name, slug: council.slug, bbox: b.bbox, maskRings: b.maskRings };
-      state.mode = 'council';
-      state.modelName = council.slug;
-      drawCouncilOutline(b.ll);
+      const b = await fetchSuburbBoundary(suburb.name);
+      // sanity guard: reject an unexpectedly huge match
+      const wkm = (b.bbox.east - b.bbox.west) * 111.32 * Math.cos(b.bbox.lat0 * Math.PI / 180);
+      const hkm = (b.bbox.north - b.bbox.south) * 111.32;
+      if (Math.max(wkm, hkm) > MAX_SPAN_KM) throw new Error(`matched area is too large (${Math.max(wkm, hkm).toFixed(1)} km across)`);
+      state.council = { name: suburb.name, slug: suburb.slug, bbox: b.bbox, maskRings: b.maskRings };
+      state.mode = 'suburb';
+      state.modelName = suburb.slug;
+      drawAreaOutline(b.ll);
       $('selBox').style.display = 'none';
       map.fitBounds([[b.bbox.west, b.bbox.south], [b.bbox.east, b.bbox.north]], { padding: 40, duration: 800 });
       const hint = $('councilHint');
       hint.style.display = 'block';
-      hint.textContent = `Council mode: the whole of ${council.name} will be built to its real boundary. This is a big area — generation is slower and may hit the free OSM server's limits; retry if it fails.`;
+      hint.textContent = `Suburb mode: the whole of ${suburb.name} will be built to its real boundary. Real footprints load automatically if you've added buildings/${suburb.slug}.buildings.json.`;
     } catch (e) {
-      setStatus('Could not load that council boundary: ' + (e.message || e), true);
-      clearCouncil();
+      setStatus('Could not load that suburb boundary: ' + (e.message || e), true);
+      clearArea();
     } finally {
       setLoading(false);
     }
   });
 }
-initCouncilPicker();
+initSuburbPicker();
 
 /* ============================================================ search */
 
@@ -214,7 +221,7 @@ function makeProjector(lat0, lon0) {
 }
 
 function currentBBox() {
-  if (state.mode === 'council' && state.council) return state.council.bbox;
+  if (state.mode === 'suburb' && state.council) return state.council.bbox;
   const c = map.getCenter();
   const half = state.sizeMeters / 2;
   const dLat = half / 111320;
@@ -279,48 +286,42 @@ function clipLineToMask(pts, rings) {
   return runs;
 }
 
-// Fetch an LGA (council) boundary from OSM/Overpass by name, return projected
-// mask rings (local metres around the council centroid) + a bbox.
-async function fetchCouncilBoundary(name) {
-  const q = `[out:json][timeout:60];
-    relation["boundary"="administrative"]["name"="${name}"](-39.2,144.3,-37.0,146.5);
-    out geom;`;
-  let data;
-  let lastErr;
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        body: 'data=' + encodeURIComponent(q),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      });
-      if (!res.ok) throw new Error('Overpass HTTP ' + res.status);
-      data = await res.json();
-      break;
-    } catch (e) { lastErr = e; }
+// Fetch a suburb boundary polygon from Nominatim (returns the geometry directly,
+// far more reliable than guessing OSM admin levels). Returns projected mask rings
+// (local metres around the suburb centroid) + lon/lat rings + a bbox.
+async function fetchSuburbBoundary(name) {
+  // bounded to a Greater-Melbourne viewbox so same-named suburbs elsewhere don't match
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1'
+    + '&limit=8&viewbox=144.30,-38.55,145.90,-37.35&bounded=1&q='
+    + encodeURIComponent(name + ', Victoria, Australia');
+  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error('Nominatim HTTP ' + res.status);
+  const results = await res.json();
+  if (!results.length) throw new Error('suburb "' + name + '" not found');
+
+  let outerLL;
+  const cand = results.find(r => r.geojson && (r.geojson.type === 'Polygon' || r.geojson.type === 'MultiPolygon'));
+  if (cand) {
+    const gj = cand.geojson;
+    const polygons = gj.type === 'Polygon' ? [gj.coordinates] : gj.coordinates;
+    outerLL = polygons.map(p => p[0]); // outer ring of each polygon ([lon,lat] pairs)
+  } else {
+    // no boundary polygon in OSM — fall back to the result's bounding rectangle
+    const bb = (results[0].boundingbox || []).map(Number); // [south, north, west, east]
+    if (bb.length !== 4) throw new Error('no boundary found for "' + name + '"');
+    const [s, n, w, e] = bb;
+    outerLL = [[[w, s], [e, s], [e, n], [w, n], [w, s]]];
   }
-  if (!data) throw lastErr || new Error('boundary lookup failed');
 
-  // prefer an admin_level 6/7 relation; take the first with members
-  const rels = (data.elements || []).filter(e => e.type === 'relation' && e.members);
-  rels.sort((a, b) => Math.abs((+((a.tags || {}).admin_level) || 9) - 6) - Math.abs((+((b.tags || {}).admin_level) || 9) - 6));
-  const rel = rels[0];
-  if (!rel) throw new Error('no boundary found for "' + name + '"');
-
-  const outerRings = stitchRings(rel.members.filter(m => m.role === 'outer' || m.role === '' || !m.role));
-  if (!outerRings.length) throw new Error('boundary has no closed ring');
-
-  // bbox + centroid
   let west = 180, east = -180, south = 90, north = -90;
-  for (const r of outerRings) for (const p of r) {
-    west = Math.min(west, p.lon); east = Math.max(east, p.lon);
-    south = Math.min(south, p.lat); north = Math.max(north, p.lat);
+  for (const r of outerLL) for (const [lon, lat] of r) {
+    west = Math.min(west, lon); east = Math.max(east, lon);
+    south = Math.min(south, lat); north = Math.max(north, lat);
   }
   const lat0 = (south + north) / 2, lon0 = (west + east) / 2;
   const project = makeProjector(lat0, lon0);
-  const maskRings = outerRings.map(r => r.map(p => project(p.lat, p.lon)));
-  const ll = outerRings.map(r => r.map(p => [p.lon, p.lat])); // for the 2D map outline
-  return { bbox: { west, south, east, north, lat0, lon0 }, maskRings, ll };
+  const maskRings = outerLL.map(r => r.map(([lon, lat]) => project(lat, lon)));
+  return { bbox: { west, south, east, north, lat0, lon0 }, maskRings, ll: outerLL };
 }
 
 /* ============================================================ boundary clipping */
@@ -1151,7 +1152,7 @@ function buildModel() {
   const project = makeProjector(bbox.lat0, bbox.lon0);
 
   // set the active build extent: council mask if present, else the square
-  if (state.mode === 'council' && state.council && state.council.maskRings) {
+  if (state.mode === 'suburb' && state.council && state.council.maskRings) {
     const c = state.council;
     let hx = 0, hy = 0;
     for (const r of c.maskRings) for (const [x, y] of r) { hx = Math.max(hx, Math.abs(x)); hy = Math.max(hy, Math.abs(y)); }
@@ -1368,7 +1369,7 @@ async function generate() {
     state.last = { bbox, elements, sampleElev, minElev, prebaked };
     const counts = swapModel();
 
-    const d = (state.mode === 'council' && state.council) ? 2 * Math.max(EXT.hx, EXT.hy) : state.sizeMeters;
+    const d = (state.mode === 'suburb' && state.council) ? 2 * Math.max(EXT.hx, EXT.hy) : state.sizeMeters;
     camera.position.set(d * 0.75, d * 0.85, d * 0.75);
     controls.target.set(0, 0, 0);
     controls.update();

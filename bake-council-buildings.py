@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-MapForge 3D — pre-bake building footprints for one council (LGA).
+MapForge 3D — pre-bake building footprints for one suburb.
 
-Downloads real building footprints for a council's area from Overture Maps
+Downloads real building footprints for a suburb's area from Overture Maps
 (open data: ODbL / CC BY 4.0), trims them to just geometry + height, and writes
-a compact minified GeoJSON the web app can load. One metro council fits in a
-single ~15-25 MB file — small enough to drag-and-drop onto GitHub.
+a compact minified GeoJSON the web app can load. A suburb fits in a single
+small file (~1-5 MB) — easily drag-and-dropped onto GitHub.
 
 WHY: OpenStreetMap doesn't have every house drawn in many suburbs (e.g. Ashwood).
 Overture's buildings (which merge Microsoft's ML footprints + OSM) do.
@@ -15,20 +15,24 @@ ONE-TIME SETUP (Windows / Mac / Linux, needs Python 3.9+ and internet):
 
     pip install overturemaps
 
-RUN (example: City of Monash, which contains Ashwood):
+RUN (example: Ashwood):
 
-    python bake-council-buildings.py monash 145.06 -37.95 145.20 -37.85
+    python bake-council-buildings.py ashwood 145.08 -37.885 145.11 -37.855
 
-  Arguments:  <name> <west> <south> <east> <north>
-  - <name>  : short slug used for the output filename + the app's council list
-  - bbox    : a generous lon/lat box AROUND the council (the app masks the
-              buildings to the exact council boundary, so err on the LARGE side)
+  Arguments:  <slug> <west> <south> <east> <north>
+  - <slug>  : the suburb's slug (lowercase, hyphenated) — must match the app's
+              suburb list, e.g. ashwood, mount-waverley, glen-iris
+  - bbox    : a generous lon/lat box AROUND the suburb (the app masks the
+              buildings to the exact suburb boundary, so err on the LARGE side)
 
-OUTPUT:  buildings/<name>.buildings.json   (minified FeatureCollection)
+  Tip: to find a suburb's bbox, search it on openstreetmap.org and read the
+  min/max lon/lat, or just use a box a little wider than the suburb.
 
-Then drag that file into the repo's  buildings/  folder on GitHub and commit.
-The app auto-loads  buildings/<council>.buildings.json  when you pick that
-council. Repeat for any other councils you want covered.
+OUTPUT:  buildings/<slug>.buildings.json   (minified FeatureCollection)
+
+Then drag that file into a  buildings/  folder in the repo on GitHub and commit.
+The app auto-loads  buildings/<slug>.buildings.json  when you pick that suburb.
+Repeat for any other suburbs you want covered.
 ------------------------------------------------------------------------------
 """
 import sys, os, json, subprocess, tempfile
