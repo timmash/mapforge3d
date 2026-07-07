@@ -15,7 +15,35 @@ const state = {
   model: null,       // THREE.Group of the last generated model
   modelName: 'queens-parade-ashwood',
   last: null,        // cached fetch: {bbox, elements, sampleElev, minElev}
+  mode: 'square',    // 'square' | 'council'
+  council: null,     // { name, slug, bbox, maskRings (local metres) } when mode==='council'
 };
+
+// Greater-Melbourne metropolitan councils (LGAs). areaKm2 is approximate and
+// used to keep 'council' mode to metro-sized areas the browser can handle.
+// slug matches the pre-baked file the app looks for: buildings/<slug>.buildings.json
+const COUNCILS = [
+  { name: 'Banyule', slug: 'banyule', areaKm2: 63 },
+  { name: 'Bayside', slug: 'bayside', areaKm2: 37 },
+  { name: 'Boroondara', slug: 'boroondara', areaKm2: 60 },
+  { name: 'Brimbank', slug: 'brimbank', areaKm2: 123 },
+  { name: 'Darebin', slug: 'darebin', areaKm2: 53 },
+  { name: 'Glen Eira', slug: 'glen-eira', areaKm2: 39 },
+  { name: 'Hobsons Bay', slug: 'hobsons-bay', areaKm2: 64 },
+  { name: 'Kingston', slug: 'kingston', areaKm2: 91 },
+  { name: 'Manningham', slug: 'manningham', areaKm2: 113 },
+  { name: 'Maribyrnong', slug: 'maribyrnong', areaKm2: 31 },
+  { name: 'Maroondah', slug: 'maroondah', areaKm2: 61 },
+  { name: 'Melbourne', slug: 'melbourne', areaKm2: 37 },
+  { name: 'Monash', slug: 'monash', areaKm2: 82 },
+  { name: 'Moonee Valley', slug: 'moonee-valley', areaKm2: 43 },
+  { name: 'Merri-bek', slug: 'merri-bek', areaKm2: 51 },
+  { name: 'Port Phillip', slug: 'port-phillip', areaKm2: 21 },
+  { name: 'Stonnington', slug: 'stonnington', areaKm2: 26 },
+  { name: 'Whitehorse', slug: 'whitehorse', areaKm2: 64 },
+  { name: 'Yarra', slug: 'yarra', areaKm2: 20 },
+];
+const MAX_COUNCIL_KM2 = 130; // metro cap
 
 // Everything the layer inspector can change lives here.
 const cfg = {
@@ -71,12 +99,75 @@ window.addEventListener('resize', updateSelBox);
 
 document.querySelectorAll('.size-grid button').forEach(btn => {
   btn.addEventListener('click', () => {
+    // choosing a square size returns to square mode
+    clearCouncil();
     document.querySelectorAll('.size-grid button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.sizeMeters = Number(btn.dataset.size);
     updateSelBox();
   });
 });
+
+/* ---------- council picker ---------- */
+
+function drawCouncilOutline(ll) {
+  const fc = { type: 'FeatureCollection', features: ll.map(r => ({
+    type: 'Feature', geometry: { type: 'LineString', coordinates: r } })) };
+  if (map.getSource('council-bd')) { map.getSource('council-bd').setData(fc); return; }
+  map.addSource('council-bd', { type: 'geojson', data: fc });
+  map.addLayer({ id: 'council-bd', type: 'line', source: 'council-bd',
+    paint: { 'line-color': '#4f8cff', 'line-width': 2.5, 'line-dasharray': [2, 1] } });
+}
+function clearCouncilOutline() {
+  if (map.getLayer('council-bd')) map.removeLayer('council-bd');
+  if (map.getSource('council-bd')) map.removeSource('council-bd');
+}
+function clearCouncil() {
+  state.mode = 'square';
+  state.council = null;
+  clearCouncilOutline();
+  $('selBox').style.display = 'block';
+  $('councilHint').style.display = 'none';
+  const sel = $('councilSelect'); if (sel) sel.value = '';
+}
+
+function initCouncilPicker() {
+  const sel = $('councilSelect');
+  for (const c of COUNCILS) {
+    const o = document.createElement('option');
+    o.value = c.slug; o.textContent = 'City of ' + c.name + ` (~${c.areaKm2} km²)`;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', async () => {
+    const slug = sel.value;
+    if (!slug) { clearCouncil(); updateSelBox(); return; }
+    const council = COUNCILS.find(c => c.slug === slug);
+    if (council.areaKm2 > MAX_COUNCIL_KM2) {
+      setStatus(`${council.name} (~${council.areaKm2} km²) is too large to build in the browser.`, true);
+      sel.value = ''; return;
+    }
+    setStatus('');
+    setLoading(true, `Finding the ${council.name} boundary…`);
+    try {
+      const b = await fetchCouncilBoundary(council.name);
+      state.council = { name: council.name, slug: council.slug, bbox: b.bbox, maskRings: b.maskRings };
+      state.mode = 'council';
+      state.modelName = council.slug;
+      drawCouncilOutline(b.ll);
+      $('selBox').style.display = 'none';
+      map.fitBounds([[b.bbox.west, b.bbox.south], [b.bbox.east, b.bbox.north]], { padding: 40, duration: 800 });
+      const hint = $('councilHint');
+      hint.style.display = 'block';
+      hint.textContent = `Council mode: the whole of ${council.name} will be built to its real boundary. This is a big area — generation is slower and may hit the free OSM server's limits; retry if it fails.`;
+    } catch (e) {
+      setStatus('Could not load that council boundary: ' + (e.message || e), true);
+      clearCouncil();
+    } finally {
+      setLoading(false);
+    }
+  });
+}
+initCouncilPicker();
 
 /* ============================================================ search */
 
@@ -123,11 +214,113 @@ function makeProjector(lat0, lon0) {
 }
 
 function currentBBox() {
+  if (state.mode === 'council' && state.council) return state.council.bbox;
   const c = map.getCenter();
   const half = state.sizeMeters / 2;
   const dLat = half / 111320;
   const dLon = half / (111320 * Math.cos(c.lat * Math.PI / 180));
   return { south: c.lat - dLat, north: c.lat + dLat, west: c.lng - dLon, east: c.lng + dLon, lat0: c.lat, lon0: c.lng };
+}
+
+/* ============================================================ council mask */
+
+// Even-odd point test over a set of rings (outer islands; holes flip parity).
+function pointInRings(x, y, rings) {
+  let inside = false;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Clip a polyline to the inside of an arbitrary polygon mask (concave OK).
+// Returns an array of runs (each ≥ 2 points) that lie within the mask.
+function clipLineToMask(pts, rings) {
+  const runs = [];
+  let run = [];
+  const push = () => { if (run.length > 1) runs.push(run); run = []; };
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    // collect crossing parameters t along segment a→b against every mask edge
+    const ts = [0, 1];
+    for (const ring of rings) {
+      for (let k = 0, m = ring.length - 1; k < ring.length; m = k++) {
+        const p = ring[m], q = ring[k];
+        const d1x = b[0] - a[0], d1y = b[1] - a[1];
+        const d2x = q[0] - p[0], d2y = q[1] - p[1];
+        const den = d1x * d2y - d1y * d2x;
+        if (Math.abs(den) < 1e-12) continue;
+        const t = ((p[0] - a[0]) * d2y - (p[1] - a[1]) * d2x) / den;
+        const u = ((p[0] - a[0]) * d1y - (p[1] - a[1]) * d1x) / den;
+        if (t > 1e-9 && t < 1 - 1e-9 && u >= -1e-9 && u <= 1 + 1e-9) ts.push(t);
+      }
+    }
+    ts.sort((m, n) => m - n);
+    for (let s = 0; s < ts.length - 1; s++) {
+      const t0 = ts[s], t1 = ts[s + 1];
+      if (t1 - t0 < 1e-9) continue;
+      const mt = (t0 + t1) / 2;
+      const mx = a[0] + (b[0] - a[0]) * mt, my = a[1] + (b[1] - a[1]) * mt;
+      const p0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
+      const p1 = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
+      if (pointInRings(mx, my, rings)) {
+        if (run.length === 0) run.push(p0);
+        else if (Math.hypot(run[run.length - 1][0] - p0[0], run[run.length - 1][1] - p0[1]) > 1e-6) { push(); run.push(p0); }
+        run.push(p1);
+      } else {
+        push();
+      }
+    }
+  }
+  push();
+  return runs;
+}
+
+// Fetch an LGA (council) boundary from OSM/Overpass by name, return projected
+// mask rings (local metres around the council centroid) + a bbox.
+async function fetchCouncilBoundary(name) {
+  const q = `[out:json][timeout:60];
+    relation["boundary"="administrative"]["name"="${name}"](-39.2,144.3,-37.0,146.5);
+    out geom;`;
+  let data;
+  let lastErr;
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        body: 'data=' + encodeURIComponent(q),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      if (!res.ok) throw new Error('Overpass HTTP ' + res.status);
+      data = await res.json();
+      break;
+    } catch (e) { lastErr = e; }
+  }
+  if (!data) throw lastErr || new Error('boundary lookup failed');
+
+  // prefer an admin_level 6/7 relation; take the first with members
+  const rels = (data.elements || []).filter(e => e.type === 'relation' && e.members);
+  rels.sort((a, b) => Math.abs((+((a.tags || {}).admin_level) || 9) - 6) - Math.abs((+((b.tags || {}).admin_level) || 9) - 6));
+  const rel = rels[0];
+  if (!rel) throw new Error('no boundary found for "' + name + '"');
+
+  const outerRings = stitchRings(rel.members.filter(m => m.role === 'outer' || m.role === '' || !m.role));
+  if (!outerRings.length) throw new Error('boundary has no closed ring');
+
+  // bbox + centroid
+  let west = 180, east = -180, south = 90, north = -90;
+  for (const r of outerRings) for (const p of r) {
+    west = Math.min(west, p.lon); east = Math.max(east, p.lon);
+    south = Math.min(south, p.lat); north = Math.max(north, p.lat);
+  }
+  const lat0 = (south + north) / 2, lon0 = (west + east) / 2;
+  const project = makeProjector(lat0, lon0);
+  const maskRings = outerRings.map(r => r.map(p => project(p.lat, p.lon)));
+  const ll = outerRings.map(r => r.map(p => [p.lon, p.lat])); // for the 2D map outline
+  return { bbox: { west, south, east, north, lat0, lon0 }, maskRings, ll };
 }
 
 /* ============================================================ boundary clipping */
@@ -188,6 +381,77 @@ function clipLineToSquare(pts, half) {
   }
   if (run.length > 1) runs.push(run);
   return runs;
+}
+
+/* ---------- generalized extent (rectangle + optional council mask) ---------- */
+
+// The active build extent, set by buildModel(). Square mode: hx=hy=size/2,
+// mask=null. Council mode: hx/hy from the council bbox, mask = its rings.
+let EXT = { hx: 1000, hy: 1000, mask: null };
+
+// Rectangle ring clip [-hx,hx]×[-hy,hy] (Sutherland–Hodgman, per-axis).
+function clipRingToRect(ring, hx, hy) {
+  let out = ring;
+  for (const [axis, dir] of [[0, 1], [0, -1], [1, 1], [1, -1]]) {
+    const h = axis === 0 ? hx : hy;
+    const inp = out; out = [];
+    if (!inp.length) return [];
+    const inside = p => p[axis] * dir >= -h;
+    const bound = -h * dir;
+    for (let i = 0; i < inp.length; i++) {
+      const prev = inp[(i + inp.length - 1) % inp.length];
+      const cur = inp[i];
+      const curIn = inside(cur), prevIn = inside(prev);
+      if (curIn !== prevIn) {
+        const t = (bound - prev[axis]) / (cur[axis] - prev[axis]);
+        out.push([prev[0] + t * (cur[0] - prev[0]), prev[1] + t * (cur[1] - prev[1])]);
+      }
+      if (curIn) out.push(cur);
+    }
+  }
+  return out.length >= 3 ? out : [];
+}
+
+function clipLineToRect(pts, hx, hy) {
+  const runs = [];
+  let run = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x1, y1] = pts[i], [x2, y2] = pts[i + 1];
+    const dx = x2 - x1, dy = y2 - y1;
+    let t0 = 0, t1 = 1, ok = true;
+    for (const [p, q] of [[-dx, x1 + hx], [dx, hx - x1], [-dy, y1 + hy], [dy, hy - y1]]) {
+      if (p === 0) { if (q < 0) { ok = false; break; } continue; }
+      const r = q / p;
+      if (p < 0) { if (r > t1) { ok = false; break; } if (r > t0) t0 = r; }
+      else       { if (r < t0) { ok = false; break; } if (r < t1) t1 = r; }
+    }
+    if (!ok) { if (run.length > 1) runs.push(run); run = []; continue; }
+    const a = [x1 + t0 * dx, y1 + t0 * dy];
+    const b = [x1 + t1 * dx, y1 + t1 * dy];
+    if (run.length === 0) run.push(a);
+    else {
+      const last = run[run.length - 1];
+      if (Math.hypot(last[0] - a[0], last[1] - a[1]) > 1e-6) { if (run.length > 1) runs.push(run); run = [a]; }
+    }
+    run.push(b);
+    if (t1 < 1) { runs.push(run); run = []; }
+  }
+  if (run.length > 1) runs.push(run);
+  return runs;
+}
+
+const clampX = v => Math.max(-EXT.hx, Math.min(EXT.hx, v));
+const clampY = v => Math.max(-EXT.hy, Math.min(EXT.hy, v));
+const insideExtent = (x, y) => Math.abs(x) <= EXT.hx && Math.abs(y) <= EXT.hy
+  && (!EXT.mask || pointInRings(x, y, EXT.mask));
+
+// Clip a polyline to the active extent (rectangle then, if present, the mask).
+function clipLineToExtent(pts) {
+  let runs = clipLineToRect(pts, EXT.hx, EXT.hy);
+  if (!EXT.mask) return runs;
+  const out = [];
+  for (const r of runs) for (const rr of clipLineToMask(r, EXT.mask)) out.push(rr);
+  return out;
 }
 
 /* ============================================================ Overpass */
@@ -469,13 +733,15 @@ function densifyLine(pts, maxLen) {
 }
 
 // Project → clip to the square → normalise winding. Returns {outer, holes} or null.
-function clippedRings(poly, project, half) {
-  let outer = clipRingToSquare(ringFromGeometry(poly.outer, project), half);
+function clippedRings(poly, project) {
+  let outer = clipRingToRect(ringFromGeometry(poly.outer, project), EXT.hx, EXT.hy);
   if (outer.length < 3 || Math.abs(ringArea(outer)) < 1) return null;
+  // council mode: keep the footprint whole if its centre is inside the boundary
+  if (EXT.mask) { const [cx, cy] = centroidOf(outer); if (!pointInRings(cx, cy, EXT.mask)) return null; }
   if (ringArea(outer) < 0) outer = outer.slice().reverse();
   const holes = [];
   for (const h of poly.holes || []) {
-    let r = clipRingToSquare(ringFromGeometry(h, project), half);
+    let r = clipRingToRect(ringFromGeometry(h, project), EXT.hx, EXT.hy);
     if (r.length < 3) continue;
     if (ringArea(r) > 0) r = r.slice().reverse();
     holes.push(r);
@@ -486,14 +752,16 @@ function clippedRings(poly, project, half) {
 /* ---------- terrain block (closed solid: displaced top, skirt, bottom) */
 
 function buildTerrainBlock(groundAt) {
-  const half = state.sizeMeters / 2;
+  if (EXT.mask) return buildCouncilTerrain(groundAt);
+
+  const hx = EXT.hx, hy = EXT.hy;
   const N = Math.max(16, Math.round(cfg.terrain.res / 16) * 16);
-  const step = state.sizeMeters / N;
+  const stepX = (2 * hx) / N, stepY = (2 * hy) / N;
 
   const hz = [];
   for (let j = 0; j <= N; j++) {
     for (let i = 0; i <= N; i++) {
-      hz.push(groundAt(-half + i * step, -half + j * step));
+      hz.push(groundAt(-hx + i * stepX, -hy + j * stepY));
     }
   }
 
@@ -501,7 +769,7 @@ function buildTerrainBlock(groundAt) {
   const V = (i, j) => j * (N + 1) + i;
   for (let j = 0; j <= N; j++) {
     for (let i = 0; i <= N; i++) {
-      const x = -half + i * step, y = -half + j * step;
+      const x = -hx + i * stepX, y = -hy + j * stepY;
       positions.push(x, hz[V(i, j)], -y);
     }
   }
@@ -521,12 +789,12 @@ function buildTerrainBlock(groundAt) {
   const bot = -Math.max(0.5, cfg.base.depth);
   const sp = [], si = [];
   const edgeLoop = [];
-  for (let i = 0; i <= N; i++) edgeLoop.push([ -half + i * step, -half ]);
-  for (let j = 1; j <= N; j++) edgeLoop.push([ half, -half + j * step ]);
-  for (let i = N - 1; i >= 0; i--) edgeLoop.push([ -half + i * step, half ]);
-  for (let j = N - 1; j >= 1; j--) edgeLoop.push([ -half, -half + j * step ]);
+  for (let i = 0; i <= N; i++) edgeLoop.push([ -hx + i * stepX, -hy ]);
+  for (let j = 1; j <= N; j++) edgeLoop.push([ hx, -hy + j * stepY ]);
+  for (let i = N - 1; i >= 0; i--) edgeLoop.push([ -hx + i * stepX, hy ]);
+  for (let j = N - 1; j >= 1; j--) edgeLoop.push([ -hx, -hy + j * stepY ]);
   const hAt = (x, y) => {
-    const i = Math.round((x + half) / step), j = Math.round((y + half) / step);
+    const i = Math.round((x + hx) / stepX), j = Math.round((y + hy) / stepY);
     return hz[V(Math.max(0, Math.min(N, i)), Math.max(0, Math.min(N, j)))];
   };
   for (let k = 0; k < edgeLoop.length; k++) {
@@ -540,7 +808,7 @@ function buildTerrainBlock(groundAt) {
     si.push(a, b, c, b, d, c);
   }
   const baseIdx = sp.length / 3;
-  sp.push(-half, bot, half,  half, bot, half,  half, bot, -half,  -half, bot, -half);
+  sp.push(-hx, bot, hy,  hx, bot, hy,  hx, bot, -hy,  -hx, bot, -hy);
   si.push(baseIdx, baseIdx + 2, baseIdx + 1, baseIdx, baseIdx + 3, baseIdx + 2);
   const skirtGeo = new THREE.BufferGeometry();
   skirtGeo.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
@@ -552,6 +820,53 @@ function buildTerrainBlock(groundAt) {
   const g = new THREE.Group();
   g.add(top, skirt);
   return g;
+}
+
+// Terrain shaped to the council boundary: a thick draped slab per mask ring.
+function buildCouncilTerrain(groundAt) {
+  const bot = -Math.max(0.5, cfg.base.depth);
+  const group = new THREE.Group();
+  const topPos = [], topIdx = [];        // draped top surface (terrain material)
+  const wallPos = [], wallIdx = [];      // skirt walls + flat bottom (base material)
+  for (const ringXY of EXT.mask) {
+    let ring = ringXY.slice();
+    if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring = ring.slice(0, -1);
+    if (ring.length < 3) continue;
+    const dense = densifyRing(ring, 40);
+    // triangulate + subdivide the interior so bumps inside the council show
+    const shapeGeo = new THREE.ShapeGeometry(new THREE.Shape(dense.map(([x, y]) => new THREE.Vector2(x, y))));
+    const pos = shapeGeo.getAttribute('position');
+    const rawIdx = shapeGeo.getIndex() ? shapeGeo.getIndex().array : null;
+    if (!rawIdx) continue;
+    const verts = [];
+    for (let i = 0; i < pos.count; i++) verts.push([pos.getX(i), pos.getY(i)]);
+    const tris = subdivideTriangulation(verts, Array.from(rawIdx), 60);
+    const base = topPos.length / 3;
+    for (const [x, y] of verts) topPos.push(x, groundAt(x, y), -y);
+    for (let t = 0; t < tris.length; t += 3) topIdx.push(base + tris[t], base + tris[t + 1], base + tris[t + 2]);
+    // skirt wall + bottom
+    const wb = wallPos.length / 3;
+    for (const [x, y] of dense) { const g = groundAt(x, y); wallPos.push(x, g, -y); wallPos.push(x, bot, -y); }
+    const m = dense.length;
+    for (let k = 0; k < m; k++) {
+      const a = wb + k * 2, b = a + 1, cc = wb + ((k + 1) % m) * 2, d = cc + 1;
+      wallIdx.push(a, b, cc, b, d, cc);
+    }
+    // bottom cap (fan over the ring's flat bottom)
+    const capBase = wallPos.length / 3;
+    for (const [x, y] of dense) wallPos.push(x, bot, -y);
+    for (let k = 1; k < m - 1; k++) wallIdx.push(capBase, capBase + k + 1, capBase + k);
+  }
+  const topGeo = new THREE.BufferGeometry();
+  topGeo.setAttribute('position', new THREE.Float32BufferAttribute(topPos, 3));
+  topGeo.setIndex(topIdx); topGeo.computeVertexNormals();
+  const top = new THREE.Mesh(topGeo, MATS.terrain); top.name = 'terrain';
+  const wallGeo = new THREE.BufferGeometry();
+  wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(wallPos, 3));
+  wallGeo.setIndex(wallIdx); wallGeo.computeVertexNormals();
+  const walls = new THREE.Mesh(wallGeo, MATS.base); walls.name = 'base';
+  group.add(top, walls);
+  return group;
 }
 
 /* ---------- buildings */
@@ -566,16 +881,17 @@ function pointInRing(x, y, ring) {
   return inside;
 }
 
-function buildBuildings(elements, project, groundAt, half) {
+function buildBuildings(elements, project, groundAt, extraPolys) {
   const c = cfg.buildings;
   const group = new THREE.Group();
   group.name = 'buildings';
   const footprints = []; // unclipped projected outer rings, used to detect mapped buildings
   const polys = collectPolygons(elements, t => t['building'] !== undefined);
+  if (extraPolys && extraPolys.length) polys.push(...extraPolys);
   for (const poly of polys) {
     try {
       footprints.push(ringFromGeometry(poly.outer, project));
-      const rings = clippedRings(poly, project, half);
+      const rings = clippedRings(poly, project);
       if (!rings) continue;
       let h = taggedHeight(poly.tags);
       h = (h === null ? c.defH : h) * c.scale + c.extra;
@@ -609,7 +925,7 @@ function buildBuildings(elements, project, groundAt, half) {
       if (el.tags['addr:housenumber'] === undefined && el.tags['building'] === undefined) continue;
       if (el.lat === undefined || el.lon === undefined) continue;
       const [x, y] = project(el.lat, el.lon);
-      if (Math.abs(x) > half || Math.abs(y) > half) continue;
+      if (!insideExtent(x, y)) continue;
       // skip nodes that fall inside an already-mapped building footprint
       let covered = false;
       for (const ring of footprints) {
@@ -624,9 +940,9 @@ function buildBuildings(elements, project, groundAt, half) {
       h = (h === null ? c.defH : h) * c.scale + c.extra;
       h = Math.max(h, c.minH, 1);
       const s = c.nodeSize;
-      // keep the box fully inside the selection square
-      const bx = Math.max(-half + s / 2, Math.min(half - s / 2, x));
-      const by = Math.max(-half + s / 2, Math.min(half - s / 2, y));
+      // keep the box fully inside the extent
+      const bx = Math.max(-EXT.hx + s / 2, Math.min(EXT.hx - s / 2, x));
+      const by = Math.max(-EXT.hy + s / 2, Math.min(EXT.hy - s / 2, y));
       const ground = groundAt(bx, by);
       let minG = ground;
       for (const [ox, oy] of [[-s / 2, -s / 2], [s / 2, -s / 2], [-s / 2, s / 2], [s / 2, s / 2]]) {
@@ -658,7 +974,7 @@ function roadClass(kind) {
   return 'minorRoads';
 }
 
-function buildRoadClass(elements, project, groundAt, half, layerKey) {
+function buildRoadClass(elements, project, groundAt, layerKey) {
   const c = cfg[layerKey];
   const group = new THREE.Group();
   group.name = layerKey;
@@ -668,13 +984,12 @@ function buildRoadClass(elements, project, groundAt, half, layerKey) {
     const kind = el.tags.highway;
     if (roadClass(kind) !== layerKey) continue;
     const width = (ROAD_WIDTHS[kind] || 5) * c.widthScale;
-    const runs = clipLineToSquare(ringFromGeometry(el.geometry, project), half);
+    const runs = clipLineToExtent(ringFromGeometry(el.geometry, project));
     const EMBED = 1.0; // how far the ribbon's underside sinks into the terrain
     for (const rawPts of runs) {
       if (rawPts.length < 2) continue;
       const pts = densifyLine(rawPts, 12); // follow the terrain closely
       const positions = [], indices = [];
-      const cl = v => Math.max(-half, Math.min(half, v));
       for (let i = 0; i < pts.length; i++) {
         const [x, y] = pts[i];
         const [xp, yp] = pts[Math.max(0, i - 1)];
@@ -683,8 +998,8 @@ function buildRoadClass(elements, project, groundAt, half, layerKey) {
         const len = Math.hypot(dx, dy) || 1;
         dx /= len; dy /= len;
         const nx = -dy, ny = dx;
-        const lx = cl(x + nx * width / 2), ly = cl(y + ny * width / 2);
-        const rx = cl(x - nx * width / 2), ry = cl(y - ny * width / 2);
+        const lx = clampX(x + nx * width / 2), ly = clampY(y + ny * width / 2);
+        const rx = clampX(x - nx * width / 2), ry = clampY(y - ny * width / 2);
         const gl = groundAt(lx, ly), gr = groundAt(rx, ry);
         // 4 vertices per cross-section: top-left, top-right, bottom-left, bottom-right
         positions.push(lx, gl + c.lift, -ly);
@@ -726,7 +1041,7 @@ const WATER_MATCH = t => t['natural'] === 'water' || t['waterway'] === 'riverban
 // polygons — render them as draped ribbons like roads, into the water group.
 const WATERWAY_WIDTHS = { river: 12, canal: 8, stream: 3.5, drain: 2.5 };
 
-function addWaterwayLines(group, elements, project, groundAt, half) {
+function addWaterwayLines(group, elements, project, groundAt) {
   const c = cfg.water;
   const EMBED = 1.0;
   for (const el of elements) {
@@ -735,12 +1050,11 @@ function addWaterwayLines(group, elements, project, groundAt, half) {
     if (!WATERWAY_WIDTHS[w]) continue;
     if (el.tags.tunnel === 'yes' || el.tags.tunnel === 'culvert') continue;
     const width = WATERWAY_WIDTHS[w];
-    const runs = clipLineToSquare(ringFromGeometry(el.geometry, project), half);
+    const runs = clipLineToExtent(ringFromGeometry(el.geometry, project));
     for (const rawPts of runs) {
       if (rawPts.length < 2) continue;
       const pts = densifyLine(rawPts, 12);
       const positions = [], indices = [];
-      const cl = v => Math.max(-half, Math.min(half, v));
       for (let i = 0; i < pts.length; i++) {
         const [x, y] = pts[i];
         const [xp, yp] = pts[Math.max(0, i - 1)];
@@ -749,8 +1063,8 @@ function addWaterwayLines(group, elements, project, groundAt, half) {
         const len = Math.hypot(dx, dy) || 1;
         dx /= len; dy /= len;
         const nx = -dy, ny = dx;
-        const lx = cl(x + nx * width / 2), ly = cl(y + ny * width / 2);
-        const rx = cl(x - nx * width / 2), ry = cl(y - ny * width / 2);
+        const lx = clampX(x + nx * width / 2), ly = clampY(y + ny * width / 2);
+        const rx = clampX(x - nx * width / 2), ry = clampY(y - ny * width / 2);
         const gl = groundAt(lx, ly), gr = groundAt(rx, ry);
         positions.push(lx, gl + c.lift, -ly);
         positions.push(rx, gr + c.lift, -ry);
@@ -776,7 +1090,7 @@ function addWaterwayLines(group, elements, project, groundAt, half) {
   }
 }
 
-function buildFlatPolys(elements, project, groundAt, half, layerKey, match) {
+function buildFlatPolys(elements, project, groundAt, layerKey, match) {
   const c = cfg[layerKey];
   const DEPTH = 1.5; // how far the slab's underside sinks into the terrain
   const group = new THREE.Group();
@@ -784,7 +1098,7 @@ function buildFlatPolys(elements, project, groundAt, half, layerKey, match) {
   const polys = collectPolygons(elements, match);
   for (const poly of polys) {
     try {
-      const rings = clippedRings(poly, project, half);
+      const rings = clippedRings(poly, project);
       if (!rings) continue;
       const outer = densifyRing(rings.outer, 15);
       const holes = rings.holes.map(h => densifyRing(h, 15));
@@ -833,9 +1147,19 @@ function buildFlatPolys(elements, project, groundAt, half, layerKey, match) {
 /* ============================================================ model build (from cached data) */
 
 function buildModel() {
-  const { bbox, elements, sampleElev, minElev } = state.last;
+  const { bbox, elements, sampleElev, minElev, prebaked } = state.last;
   const project = makeProjector(bbox.lat0, bbox.lon0);
-  const half = state.sizeMeters / 2;
+
+  // set the active build extent: council mask if present, else the square
+  if (state.mode === 'council' && state.council && state.council.maskRings) {
+    const c = state.council;
+    let hx = 0, hy = 0;
+    for (const r of c.maskRings) for (const [x, y] of r) { hx = Math.max(hx, Math.abs(x)); hy = Math.max(hy, Math.abs(y)); }
+    EXT = { hx: hx + 5, hy: hy + 5, mask: c.maskRings };
+  } else {
+    const half = state.sizeMeters / 2;
+    EXT = { hx: half, hy: half, mask: null };
+  }
 
   // ground height in relative metres at local x/y, with exaggeration applied
   const groundAt = (x, y) => {
@@ -851,28 +1175,58 @@ function buildModel() {
 
   const counts = {};
   if (cfg.buildings.on) {
-    const g = buildBuildings(elements, project, groundAt, half);
+    const extra = prebaked ? prebakedToPolys(prebaked, project) : null;
+    const g = buildBuildings(elements, project, groundAt, extra);
     counts.buildings = g.children.length;
     model.add(g);
   }
   for (const rk of ['majorRoads', 'minorRoads', 'paths']) {
     if (!cfg[rk].on) continue;
-    const g = buildRoadClass(elements, project, groundAt, half, rk);
+    const g = buildRoadClass(elements, project, groundAt, rk);
     counts[rk] = g.children.length;
     model.add(g);
   }
   if (cfg.green.on) {
-    const g = buildFlatPolys(elements, project, groundAt, half, 'green', GREEN_MATCH);
+    const g = buildFlatPolys(elements, project, groundAt, 'green', GREEN_MATCH);
     counts.green = g.children.length;
     model.add(g);
   }
   if (cfg.water.on) {
-    const g = buildFlatPolys(elements, project, groundAt, half, 'water', WATER_MATCH);
-    addWaterwayLines(g, elements, project, groundAt, half);
+    const g = buildFlatPolys(elements, project, groundAt, 'water', WATER_MATCH);
+    addWaterwayLines(g, elements, project, groundAt);
     counts.water = g.children.length;
     model.add(g);
   }
   return { model, counts };
+}
+
+// Convert a pre-baked buildings FeatureCollection into the poly shape the
+// building builder consumes ({tags:{height}, outer:[{lat,lon}], holes:[...]}).
+function prebakedToPolys(fc, project) {
+  const polys = [];
+  const toRing = coords => coords.map(([lon, lat]) => ({ lat, lon }));
+  for (const ft of (fc.features || [])) {
+    const g = ft.geometry; if (!g) continue;
+    const h = ft.properties && ft.properties.h;
+    const tags = (h != null) ? { height: String(h) } : {};
+    const push = rings => {
+      if (!rings || !rings.length || rings[0].length < 4) return;
+      polys.push({ tags, outer: toRing(rings[0]), holes: rings.slice(1).map(toRing) });
+    };
+    if (g.type === 'Polygon') push(g.coordinates);
+    else if (g.type === 'MultiPolygon') for (const poly of g.coordinates) push(poly);
+  }
+  return polys;
+}
+
+// Load buildings/<slug>.buildings.json (returns null if none exists).
+async function loadPrebaked(slug) {
+  if (!slug) return null;
+  try {
+    const res = await fetch('buildings/' + slug + '.buildings.json', { cache: 'force-cache' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) { return null; }
 }
 
 function swapModel() {
@@ -990,6 +1344,9 @@ async function generate() {
         console.warn('Elevation unavailable, using flat terrain', e);
       }
     }
+    // pre-baked real footprints for the selected council (if a file exists)
+    const prebaked = await loadPrebaked(state.council && state.council.slug);
+
     const osm = await osmPromise;
     const elements = osm.elements || [];
 
@@ -1008,10 +1365,10 @@ async function generate() {
       }
     }
 
-    state.last = { bbox, elements, sampleElev, minElev };
+    state.last = { bbox, elements, sampleElev, minElev, prebaked };
     const counts = swapModel();
 
-    const d = state.sizeMeters;
+    const d = (state.mode === 'council' && state.council) ? 2 * Math.max(EXT.hx, EXT.hy) : state.sizeMeters;
     camera.position.set(d * 0.75, d * 0.85, d * 0.75);
     controls.target.set(0, 0, 0);
     controls.update();
