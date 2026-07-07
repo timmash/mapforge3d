@@ -11,7 +11,7 @@ import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 /* ============================================================ state & layer config */
 
 const state = {
-  sizeMeters: 1000,  // side length of the selection square
+  sizeMeters: 2000,  // side length of the selection square
   model: null,       // THREE.Group of the last generated model
   modelName: 'queens-parade-ashwood',
   last: null,        // cached fetch: {bbox, elements, sampleElev, minElev}
@@ -19,7 +19,7 @@ const state = {
 
 // Everything the layer inspector can change lives here.
 const cfg = {
-  terrain:    { on: true,  color: '#5e7d5a', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
+  terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#3a4048', metal: 0.0,  rough: 1.0,  depth: 12 },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.5 },
@@ -368,6 +368,61 @@ function densifyRing(ring, maxLen) {
   return out;
 }
 
+// Subdivide a 2D triangulation until no edge exceeds maxLen, so draped
+// surfaces gain interior vertices and follow the terrain instead of
+// letting bumps poke through large triangles. Midpoints are shared via a
+// cache so neighbouring triangles stay stitched together (no cracks).
+function subdivideTriangulation(verts, tris, maxLen) {
+  const max2 = maxLen * maxLen;
+  for (let iter = 0; iter < 8; iter++) {
+    const midCache = new Map();
+    const newTris = [];
+    let changed = false;
+    const midpoint = (a, b) => {
+      const k = a < b ? a + '_' + b : b + '_' + a;
+      let m = midCache.get(k);
+      if (m === undefined) {
+        m = verts.length;
+        verts.push([(verts[a][0] + verts[b][0]) / 2, (verts[a][1] + verts[b][1]) / 2]);
+        midCache.set(k, m);
+      }
+      return m;
+    };
+    const long = (a, b) => {
+      const dx = verts[a][0] - verts[b][0], dy = verts[a][1] - verts[b][1];
+      return dx * dx + dy * dy > max2;
+    };
+    for (let t = 0; t < tris.length; t += 3) {
+      const a = tris[t], b = tris[t + 1], c = tris[t + 2];
+      const ab = long(a, b), bc = long(b, c), ca = long(c, a);
+      const count = (ab ? 1 : 0) + (bc ? 1 : 0) + (ca ? 1 : 0);
+      if (count === 0) { newTris.push(a, b, c); continue; }
+      changed = true;
+      if (count === 3) {
+        const p = midpoint(a, b), q = midpoint(b, c), r = midpoint(c, a);
+        newTris.push(a, p, r,  p, b, q,  r, q, c,  p, q, r);
+      } else if (count === 2) {
+        // rotate so the two long edges are ab and bc
+        let A = a, B = b, C = c;
+        if (!ab && bc && ca)      { A = b; B = c; C = a; }
+        else if (ab && !bc && ca) { A = c; B = a; C = b; }
+        const p = midpoint(A, B), q = midpoint(B, C);
+        newTris.push(A, p, C,  p, B, q,  p, q, C);
+      } else {
+        // rotate so the long edge is ab
+        let A = a, B = b, C = c;
+        if (bc)      { A = b; B = c; C = a; }
+        else if (ca) { A = c; B = a; C = b; }
+        const p = midpoint(A, B);
+        newTris.push(A, p, C,  p, B, C);
+      }
+    }
+    tris = newTris;
+    if (!changed) break;
+  }
+  return tris;
+}
+
 function densifyLine(pts, maxLen) {
   const out = [pts[0]];
   for (let i = 1; i < pts.length; i++) {
@@ -646,23 +701,20 @@ function buildFlatPolys(elements, project, groundAt, half, layerKey, match) {
       const outer = densifyRing(rings.outer, 15);
       const holes = rings.holes.map(h => densifyRing(h, 15));
 
-      // triangulate in 2D, then drape every vertex onto the terrain
+      // triangulate in 2D, subdivide the interior, then drape every vertex
       const shapeGeo = new THREE.ShapeGeometry(shapeFromRings(outer, holes));
       const pos = shapeGeo.getAttribute('position');
-      const idx = shapeGeo.getIndex() ? shapeGeo.getIndex().array : null;
-      if (!idx) continue;
-      const n = pos.count;
+      const rawIdx = shapeGeo.getIndex() ? shapeGeo.getIndex().array : null;
+      if (!rawIdx) continue;
+      const verts = [];
+      for (let i = 0; i < pos.count; i++) verts.push([pos.getX(i), pos.getY(i)]);
+      const tris = subdivideTriangulation(verts, Array.from(rawIdx), 15);
+      const n = verts.length;
       const positions = [], indices = [];
-      for (let i = 0; i < n; i++) {   // draped top surface
-        const x = pos.getX(i), y = pos.getY(i);
-        positions.push(x, groundAt(x, y) + c.lift, -y);
-      }
-      for (let i = 0; i < n; i++) {   // draped underside
-        const x = pos.getX(i), y = pos.getY(i);
-        positions.push(x, groundAt(x, y) - DEPTH, -y);
-      }
-      for (let t = 0; t < idx.length; t += 3) indices.push(idx[t], idx[t + 1], idx[t + 2]);
-      for (let t = 0; t < idx.length; t += 3) indices.push(n + idx[t + 2], n + idx[t + 1], n + idx[t]);
+      for (const [x, y] of verts) positions.push(x, groundAt(x, y) + c.lift, -y);  // draped top
+      for (const [x, y] of verts) positions.push(x, groundAt(x, y) - DEPTH, -y);   // draped underside
+      for (let t = 0; t < tris.length; t += 3) indices.push(tris[t], tris[t + 1], tris[t + 2]);
+      for (let t = 0; t < tris.length; t += 3) indices.push(n + tris[t + 2], n + tris[t + 1], n + tris[t]);
       // side walls around the outer ring and every hole
       const addWalls = (ring) => {
         const base = positions.length / 3;
