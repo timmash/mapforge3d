@@ -208,6 +208,7 @@ async function fetchOSM(bbox) {
     `way["natural"="water"](${bb});`,
     `relation["natural"="water"]["type"="multipolygon"](${bb});`,
     `way["waterway"="riverbank"](${bb});`,
+    `way["waterway"~"^(river|stream|canal|drain)$"](${bb});`,
     `way["leisure"~"^(park|garden|pitch|golf_course)$"](${bb});`,
     `relation["leisure"~"^(park|garden|golf_course)$"]["type"="multipolygon"](${bb});`,
     `way["landuse"~"^(grass|meadow|forest|recreation_ground|village_green|cemetery)$"](${bb});`,
@@ -338,6 +339,37 @@ function centroidOf(ring) {
   return [x / ring.length, y / ring.length];
 }
 
+// Stitch multipolygon member ways (often fragments of a ring) into closed rings.
+function stitchRings(members) {
+  const frags = members.map(m => (m.geometry || []).slice()).filter(g => g.length >= 2);
+  const rings = [];
+  const same = (a, b) => Math.abs(a.lat - b.lat) < 1e-7 && Math.abs(a.lon - b.lon) < 1e-7;
+  while (frags.length) {
+    let ring = frags.pop();
+    let extended = true;
+    while (!same(ring[0], ring[ring.length - 1]) && extended) {
+      extended = false;
+      for (let i = 0; i < frags.length; i++) {
+        const f = frags[i];
+        const end = ring[ring.length - 1], start = ring[0];
+        if (same(f[0], end))                 { ring = ring.concat(f.slice(1)); }
+        else if (same(f[f.length - 1], end)) { ring = ring.concat(f.slice(0, -1).reverse()); }
+        else if (same(f[f.length - 1], start)) { ring = f.slice(0, -1).concat(ring); }
+        else if (same(f[0], start))          { ring = f.slice(1).reverse().concat(ring); }
+        else continue;
+        frags.splice(i, 1);
+        extended = true;
+        break;
+      }
+    }
+    if (ring.length >= 4) {
+      if (!same(ring[0], ring[ring.length - 1])) ring = ring.concat([ring[0]]);
+      rings.push(ring);
+    }
+  }
+  return rings;
+}
+
 function collectPolygons(elements, match) {
   const polys = [];
   for (const el of elements) {
@@ -345,10 +377,12 @@ function collectPolygons(elements, match) {
     if (el.type === 'way' && el.geometry && el.geometry.length >= 4) {
       polys.push({ tags: el.tags, outer: el.geometry, holes: [] });
     } else if (el.type === 'relation' && el.members) {
-      const outers = el.members.filter(m => m.role === 'outer' && m.geometry && m.geometry.length >= 4);
-      const inners = el.members.filter(m => m.role === 'inner' && m.geometry && m.geometry.length >= 4);
+      const outers = stitchRings(el.members.filter(m => m.role === 'outer'));
+      const inners = stitchRings(el.members.filter(m => m.role === 'inner'));
       for (const o of outers) {
-        polys.push({ tags: el.tags, outer: o.geometry, holes: inners.map(i => i.geometry) });
+        const oxy = o.map(p => [p.lon, p.lat]);
+        const holes = inners.filter(inn => pointInRing(inn[0].lon, inn[0].lat, oxy));
+        polys.push({ tags: el.tags, outer: o, holes });
       }
     }
   }
@@ -688,6 +722,60 @@ const GREEN_MATCH = t =>
 
 const WATER_MATCH = t => t['natural'] === 'water' || t['waterway'] === 'riverbank';
 
+// Linear waterways (rivers, streams, canals, drains) are mapped as lines, not
+// polygons — render them as draped ribbons like roads, into the water group.
+const WATERWAY_WIDTHS = { river: 12, canal: 8, stream: 3.5, drain: 2.5 };
+
+function addWaterwayLines(group, elements, project, groundAt, half) {
+  const c = cfg.water;
+  const EMBED = 1.0;
+  for (const el of elements) {
+    if (el.type !== 'way' || !el.tags || !el.geometry) continue;
+    const w = el.tags.waterway;
+    if (!WATERWAY_WIDTHS[w]) continue;
+    if (el.tags.tunnel === 'yes' || el.tags.tunnel === 'culvert') continue;
+    const width = WATERWAY_WIDTHS[w];
+    const runs = clipLineToSquare(ringFromGeometry(el.geometry, project), half);
+    for (const rawPts of runs) {
+      if (rawPts.length < 2) continue;
+      const pts = densifyLine(rawPts, 12);
+      const positions = [], indices = [];
+      const cl = v => Math.max(-half, Math.min(half, v));
+      for (let i = 0; i < pts.length; i++) {
+        const [x, y] = pts[i];
+        const [xp, yp] = pts[Math.max(0, i - 1)];
+        const [xn, yn] = pts[Math.min(pts.length - 1, i + 1)];
+        let dx = xn - xp, dy = yn - yp;
+        const len = Math.hypot(dx, dy) || 1;
+        dx /= len; dy /= len;
+        const nx = -dy, ny = dx;
+        const lx = cl(x + nx * width / 2), ly = cl(y + ny * width / 2);
+        const rx = cl(x - nx * width / 2), ry = cl(y - ny * width / 2);
+        const gl = groundAt(lx, ly), gr = groundAt(rx, ry);
+        positions.push(lx, gl + c.lift, -ly);
+        positions.push(rx, gr + c.lift, -ry);
+        positions.push(lx, gl - EMBED, -ly);
+        positions.push(rx, gr - EMBED, -ry);
+        if (i > 0) {
+          const p = (i - 1) * 4, s = i * 4;
+          indices.push(p, p + 1, s,  p + 1, s + 1, s);
+          indices.push(p + 2, s + 2, p + 3,  p + 3, s + 2, s + 3);
+          indices.push(p, s, p + 2,  s, s + 2, p + 2);
+          indices.push(p + 1, p + 3, s + 1,  s + 1, p + 3, s + 3);
+        }
+      }
+      const last = (pts.length - 1) * 4;
+      indices.push(0, 2, 1,  1, 2, 3);
+      indices.push(last, last + 1, last + 2,  last + 1, last + 3, last + 2);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      group.add(new THREE.Mesh(geo, MATS.water));
+    }
+  }
+}
+
 function buildFlatPolys(elements, project, groundAt, half, layerKey, match) {
   const c = cfg[layerKey];
   const DEPTH = 1.5; // how far the slab's underside sinks into the terrain
@@ -780,6 +868,7 @@ function buildModel() {
   }
   if (cfg.water.on) {
     const g = buildFlatPolys(elements, project, groundAt, half, 'water', WATER_MATCH);
+    addWaterwayLines(g, elements, project, groundAt, half);
     counts.water = g.children.length;
     model.add(g);
   }
@@ -955,46 +1044,38 @@ const INSPECTOR = [
     ['extra', 'Extra height (m)', 'range', 0, 40, 1],
     ['minH', 'Minimum height (m)', 'range', 0, 30, 1],
     ['fit', 'Ground fit', 'select', [['terrain', 'Follow terrain'], ['flat', 'Flat (lowest point)']]],
-    ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'majorRoads', label: 'Major roads', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['widthScale', 'Width scale', 'range', 0.2, 3, 0.05],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'minorRoads', label: 'Minor roads', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['widthScale', 'Width scale', 'range', 0.2, 3, 0.05],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'paths', label: 'Paths & tracks', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['widthScale', 'Width scale', 'range', 0.2, 3, 0.05],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'green', label: 'Green space', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'water', label: 'Water', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-    ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'terrain', label: 'Terrain elevation', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['exag', 'Vertical exaggeration', 'range', 0, 3, 0.05],
     ['res', 'Level of detail', 'range', 32, 160, 16],
-    ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
   { key: 'base', label: 'Base block', toggle: false, items: [
     ['color', 'Colour', 'color'],
     ['depth', 'Base depth (m)', 'range', 1, 100, 1],
-    ['rough', 'Roughness', 'range', 0, 1, 0.01],
   ]},
 ];
 
