@@ -297,12 +297,12 @@
         <button data-size="250">250 m</button>
         <button data-size="500">500 m</button>
         <button data-size="1000">1 km</button>
-        <button data-size="2000" class="active">2 km</button>
+        <button data-size="2000">2 km</button>
         <button data-size="5000">5 km</button>
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" id="layersSection" style="display:none">
       <h2>3 · Layers</h2>
       <div id="layersUI"></div>
       <p class="hint">Tick to include a layer. Click a layer name to open its inspector — colours apply instantly; heights, widths and terrain settings rebuild the model live.</p>
@@ -322,7 +322,7 @@
       </div>
       <p class="hint">GLB (glTF) opens in Blender &amp; most 3D apps, in real-world metres · STL is pre-scaled to 200 mm for 3D printing · OBJ is universally supported (Rhino, SketchUp&nbsp;Pro, Maya…). The grey base sheet is preview-only and is <em>not</em> included in these 3D files.</p>
       <button id="expPdf" class="pdf-btn">⬇ Base map (PDF, A3)</button>
-      <p class="hint">A flat greyscale map on an A3 sheet (297 × 420 mm, north up), sized so the printed 200 mm model sits in the lower two-thirds at 1:1. Print at 100% scale on A3.</p>
+      <p class="hint" id="pdfHint">A flat greyscale map on an A3 sheet (297 × 420 mm, north up), sized so the printed 200 mm model sits in the lower two-thirds at 1:1. Print at 100% scale on A3.</p>
     </div>
 
     <footer>

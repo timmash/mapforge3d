@@ -13,12 +13,15 @@ import { jsPDF } from 'https://esm.sh/jspdf@2.5.1';
 /* ============================================================ state & layer config */
 
 const state = {
-  sizeMeters: 2000,  // side length of the selection square
+  sizeMeters: null,  // side length of the selection square (null = nothing chosen yet)
   model: null,       // THREE.Group of the last generated model
   modelName: 'queens-parade-ashwood',
   last: null,        // cached fetch: {bbox, elements, sampleElev, minElev}
   mode: 'square',    // 'square' | 'suburb'
   council: null,     // selected area: { name, slug, bbox, maskRings } when mode==='suburb'
+  uiMode: 'suburb',  // top toggle: 'suburb' | 'custom'
+  baseData: null,    // cached inputs for rebuilding the backing map: {bbox, elements, prebaked, M}
+  placeLabels: null, // { suburb, postcode } for the backing-map title (best-effort)
 };
 
 // Greater-Melbourne suburbs. The slug matches the optional pre-baked footprints
@@ -58,6 +61,7 @@ const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#3a4048', metal: 0.0,  rough: 1.0,  depth: 12 },
+  backing:    { on: true,  title: 'none' },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
   minorRoads: { on: true,  color: '#3a4353', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
@@ -69,6 +73,7 @@ const cfg = {
 // One material per layer, updated live by the inspector.
 const MATS = {};
 for (const key of Object.keys(cfg)) {
+  if (!cfg[key].color) continue;   // layers without a colour (e.g. backing map) have no material
   MATS[key] = new THREE.MeshStandardMaterial({
     color: new THREE.Color(cfg[key].color),
     metalness: cfg[key].metal,
@@ -95,8 +100,11 @@ function metersPerPixel() {
   return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, map.getZoom());
 }
 function updateSelBox() {
-  const px = state.sizeMeters / metersPerPixel();
   const el = $('selBox');
+  // Only show the square in Custom mode once an area size has been chosen.
+  if (state.uiMode !== 'custom' || !state.sizeMeters) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  const px = state.sizeMeters / metersPerPixel();
   const maxPx = Math.min(window.innerWidth, window.innerHeight) * 0.9;
   el.style.width = el.style.height = Math.min(px, maxPx) + 'px';
   const km = state.sizeMeters >= 1000 ? (state.sizeMeters / 1000) + ' km' : state.sizeMeters + ' m';
@@ -114,6 +122,7 @@ document.querySelectorAll('.size-grid button').forEach(btn => {
     btn.classList.add('active');
     state.sizeMeters = Number(btn.dataset.size);
     updateSelBox();
+    updateLayersVisibility();
   });
 });
 
@@ -135,9 +144,16 @@ function clearArea() {
   state.mode = 'square';
   state.council = null;
   clearAreaOutline();
-  $('selBox').style.display = 'block';
+  $('selBox').style.display = (state.uiMode === 'custom' && state.sizeMeters) ? 'block' : 'none';
   $('councilHint').style.display = 'none';
   const sel = $('councilSelect'); if (sel) sel.value = '';
+}
+
+// Show the Layers + Generate controls only once there's something to build:
+// a chosen suburb, or (in Custom mode) a chosen area size.
+function updateLayersVisibility() {
+  const ready = !!state.council || (state.uiMode === 'custom' && !!state.sizeMeters);
+  $('layersSection').style.display = ready ? 'block' : 'none';
 }
 
 function initSuburbPicker() {
@@ -149,7 +165,7 @@ function initSuburbPicker() {
   }
   sel.addEventListener('change', async () => {
     const slug = sel.value;
-    if (!slug) { clearArea(); if (state.uiMode === 'suburb') $('selBox').style.display = 'none'; else updateSelBox(); return; }
+    if (!slug) { clearArea(); if (state.uiMode === 'suburb') $('selBox').style.display = 'none'; else updateSelBox(); updateLayersVisibility(); return; }
     const suburb = SUBURBS.find(s => s.slug === slug);
     setStatus('');
     setLoading(true, `Finding the ${suburb.name} boundary…`);
@@ -159,9 +175,10 @@ function initSuburbPicker() {
       const wkm = (b.bbox.east - b.bbox.west) * 111.32 * Math.cos(b.bbox.lat0 * Math.PI / 180);
       const hkm = (b.bbox.north - b.bbox.south) * 111.32;
       if (Math.max(wkm, hkm) > MAX_SPAN_KM) throw new Error(`matched area is too large (${Math.max(wkm, hkm).toFixed(1)} km across)`);
-      state.council = { name: suburb.name, slug: suburb.slug, bbox: b.bbox, maskRings: b.maskRings };
+      state.council = { name: suburb.name, slug: suburb.slug, bbox: b.bbox, maskRings: b.maskRings, postcode: b.postcode };
       state.mode = 'suburb';
       state.modelName = suburb.slug;
+      updateLayersVisibility();
       drawAreaOutline(b.ll);
       $('selBox').style.display = 'none';
       map.fitBounds([[b.bbox.west, b.bbox.south], [b.bbox.east, b.bbox.north]], { padding: 40, duration: 800 });
@@ -171,6 +188,7 @@ function initSuburbPicker() {
     } catch (e) {
       setStatus('Could not load that suburb boundary: ' + (e.message || e), true);
       clearArea();
+      updateLayersVisibility();
     } finally {
       setLoading(false);
     }
@@ -194,9 +212,10 @@ function setMode(mode) {
     if (state.council) state.mode = 'suburb';
   } else {
     // Custom mode: reset to a square selection the user pans over the map.
-    clearArea();          // → square mode, clears any suburb, shows selBox
+    clearArea();          // → square mode, clears any suburb
     updateSelBox();
   }
+  updateLayersVisibility();
 }
 $('modeSuburb').addEventListener('click', () => setMode('suburb'));
 $('modeCustom').addEventListener('click', () => setMode('custom'));
@@ -317,7 +336,7 @@ function clipLineToMask(pts, rings) {
 // (local metres around the suburb centroid) + lon/lat rings + a bbox.
 async function fetchSuburbBoundary(name) {
   // bounded to a Greater-Melbourne viewbox so same-named suburbs elsewhere don't match
-  const url = 'https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1'
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&addressdetails=1'
     + '&limit=8&viewbox=144.30,-38.55,145.90,-37.35&bounded=1&q='
     + encodeURIComponent(name + ', Victoria, Australia');
   const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
@@ -327,6 +346,8 @@ async function fetchSuburbBoundary(name) {
 
   let outerLL;
   const cand = results.find(r => r.geojson && (r.geojson.type === 'Polygon' || r.geojson.type === 'MultiPolygon'));
+  const postcode = (cand && cand.address && cand.address.postcode)
+    || (results[0].address && results[0].address.postcode) || '';
   if (cand) {
     const gj = cand.geojson;
     const polygons = gj.type === 'Polygon' ? [gj.coordinates] : gj.coordinates;
@@ -347,7 +368,30 @@ async function fetchSuburbBoundary(name) {
   const lat0 = (south + north) / 2, lon0 = (west + east) / 2;
   const project = makeProjector(lat0, lon0);
   const maskRings = outerLL.map(r => r.map(([lon, lat]) => project(lat, lon)));
-  return { bbox: { west, south, east, north, lat0, lon0 }, maskRings, ll: outerLL };
+  return { bbox: { west, south, east, north, lat0, lon0 }, maskRings, ll: outerLL, postcode };
+}
+
+// Reverse-geocode the area centre to a suburb name + postcode for the backing-map
+// title. Best-effort: in suburb mode we already have both, so skip the request.
+async function ensurePlaceLabels(bbox) {
+  if (state.council && state.council.name && state.council.postcode) {
+    state.placeLabels = { suburb: state.council.name, postcode: state.council.postcode };
+    return;
+  }
+  try {
+    const url = 'https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&zoom=14'
+      + '&lat=' + bbox.lat0 + '&lon=' + bbox.lon0;
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) throw new Error('reverse HTTP ' + res.status);
+    const a = (await res.json()).address || {};
+    state.placeLabels = {
+      suburb: (state.council && state.council.name)
+        || a.suburb || a.neighbourhood || a.city_district || a.town || a.village || a.city || '',
+      postcode: (state.council && state.council.postcode) || a.postcode || '',
+    };
+  } catch (e) {
+    console.warn('Place labels unavailable', e);
+  }
 }
 
 /* ============================================================ boundary clipping */
@@ -1340,6 +1384,13 @@ function scheduleRebuild() {
   }, 250);
 }
 
+// Route a layer control change to the right rebuild. The backing map is not part
+// of the exported 3D model, so it rebuilds independently of the model geometry.
+function layerChanged(key) {
+  if (key === 'backing') rebuildBaseLayer();
+  else scheduleRebuild();
+}
+
 function statusLine(counts) {
   const roads = (counts.majorRoads || 0) + (counts.minorRoads || 0) + (counts.paths || 0);
   return `Done — ${counts.buildings || 0} buildings, ${roads} road segments, ${counts.water || 0} water, ${counts.green || 0} green areas.`;
@@ -1419,6 +1470,10 @@ async function generate() {
     setStatus('Choose a suburb from the dropdown first — or switch to Custom mode to build a square area.', true);
     return;
   }
+  if (state.uiMode === 'custom' && !state.sizeMeters) {
+    setStatus('Choose an area size first.', true);
+    return;
+  }
   const bbox = currentBBox();
   $('generateBtn').disabled = true;
   setStatus('');
@@ -1475,7 +1530,10 @@ async function generate() {
     } catch (e) {
       console.warn('Wider base-sheet context unavailable, using model data', e);
     }
-    buildBaseLayer(bbox, baseElements, prebaked, M);
+    // place labels (suburb + postcode) for the backing-map title — best-effort
+    await ensurePlaceLabels(bbox);
+    state.baseData = { bbox, elements: baseElements, prebaked, M };
+    rebuildBaseLayer();
 
     const d = (state.mode === 'suburb' && state.council) ? 2 * Math.max(EXT.hx, EXT.hy) : state.sizeMeters;
     camera.position.set(d * 0.9, d * 0.95, d * 0.9);
@@ -1543,6 +1601,9 @@ const INSPECTOR = [
     ['color', 'Colour', 'color'],
     ['depth', 'Base depth (m)', 'range', 1, 100, 1],
   ]},
+  { key: 'backing', label: 'Backing map', toggle: true, items: [
+    ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title']]],
+  ]},
 ];
 
 const MATERIAL_KEYS = new Set(['color', 'metal', 'rough']);
@@ -1570,7 +1631,7 @@ function buildInspectorUI() {
       cb.type = 'checkbox';
       cb.checked = c.on;
       cb.addEventListener('click', e => e.stopPropagation());
-      cb.addEventListener('change', () => { c.on = cb.checked; scheduleRebuild(); });
+      cb.addEventListener('change', () => { c.on = cb.checked; layerChanged(layer.key); });
       head.appendChild(cb);
     } else {
       const spacer = document.createElement('span');
@@ -1578,10 +1639,17 @@ function buildInspectorUI() {
       head.appendChild(spacer);
     }
 
-    const sw = document.createElement('span');
-    sw.className = 'swatch';
-    sw.style.background = c.color;
-    head.appendChild(sw);
+    let sw = null;
+    if (c.color !== undefined) {
+      sw = document.createElement('span');
+      sw.className = 'swatch';
+      sw.style.background = c.color;
+      head.appendChild(sw);
+    } else {
+      const spacer = document.createElement('span');
+      spacer.className = 'cb-spacer';
+      head.appendChild(spacer);
+    }
 
     const name = document.createElement('span');
     name.className = 'layer-name';
@@ -1617,7 +1685,7 @@ function buildInspectorUI() {
         inp.value = c[prop];
         inp.addEventListener('input', () => {
           c[prop] = inp.value;
-          sw.style.background = inp.value;
+          if (sw) sw.style.background = inp.value;
           applyMaterial(layer.key);
         });
         row.appendChild(inp);
@@ -1629,7 +1697,7 @@ function buildInspectorUI() {
         inp.style.width = '15px';
         inp.style.height = '15px';
         inp.style.cursor = 'pointer';
-        inp.addEventListener('change', () => { c[prop] = inp.checked; scheduleRebuild(); });
+        inp.addEventListener('change', () => { c[prop] = inp.checked; layerChanged(layer.key); });
         row.appendChild(inp);
       } else if (kind === 'select') {
         const sel = document.createElement('select');
@@ -1639,7 +1707,7 @@ function buildInspectorUI() {
           sel.appendChild(o);
         }
         sel.value = c[prop];
-        sel.addEventListener('change', () => { c[prop] = sel.value; scheduleRebuild(); });
+        sel.addEventListener('change', () => { c[prop] = sel.value; layerChanged(layer.key); });
         row.appendChild(sel);
       } else { // range
         const [, , , min, max, step] = item;
@@ -1654,7 +1722,7 @@ function buildInspectorUI() {
           c[prop] = Number(inp.value);
           val.textContent = inp.value;
           if (MATERIAL_KEYS.has(prop)) applyMaterial(layer.key);
-          else scheduleRebuild();
+          else layerChanged(layer.key);
         });
         row.appendChild(inp);
         row.appendChild(val);
@@ -1751,7 +1819,51 @@ function buildFlatMapCanvas(project, elements, extraBuildingPolys, M) {
   }
   ctx.fill('evenodd');
 
+  // Optional large title on the empty band above the 3D render, scaled so its
+  // width matches the width of the model footprint.
+  const titleText = backingTitleText();
+  if (titleText) drawBackingTitle(ctx, titleText, s, pxmm);
+
   return canvas;
+}
+
+// Which title (if any) to print on the backing map.
+function backingTitleText() {
+  const mode = cfg.backing.title;
+  if (mode === 'postcode') {
+    return (state.council && state.council.postcode)
+      || (state.placeLabels && state.placeLabels.postcode) || '';
+  }
+  if (mode === 'suburb') {
+    return (state.council && state.council.name)
+      || (state.placeLabels && state.placeLabels.suburb) || '';
+  }
+  return '';
+}
+
+// Draw the title centred over the model, its width matched to the model footprint
+// (2·EXT.hx metres wide), sitting in the empty band north of the model.
+function drawBackingTitle(ctx, text, s, pxmm) {
+  const modelWmm = 2 * EXT.hx * s;                       // model footprint width in mm
+  const targetWpx = modelWmm * pxmm;
+  const modelTopMM = MODEL_CY_MM - EXT.hy * s;           // north edge of the model, mm from top
+  const bandMM = Math.max(10, modelTopMM);               // empty band above the model
+  const yMM = modelTopMM - bandMM / 2;                   // centre of that band
+
+  ctx.save();
+  ctx.fillStyle = '#7a7a7a';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // fit the font size so the rendered text is exactly the model's width
+  let fs = 100;
+  ctx.font = `700 ${fs}px "Segoe UI", system-ui, -apple-system, sans-serif`;
+  const w0 = ctx.measureText(text).width || 1;
+  fs = fs * targetWpx / w0;
+  // keep it from overflowing the band's height
+  fs = Math.min(fs, bandMM * 0.7 * pxmm);
+  ctx.font = `700 ${fs}px "Segoe UI", system-ui, -apple-system, sans-serif`;
+  ctx.fillText(text, MODEL_CX_MM * pxmm, yMM * pxmm);
+  ctx.restore();
 }
 
 function buildBaseLayer(bbox, elements, prebaked, M) {
@@ -1785,6 +1897,35 @@ function buildBaseLayer(bbox, elements, prebaked, M) {
   scene.add(mesh);
 
   state.basePdf = { canvas, wmm: A3_W, hmm: A3_H };      // A3 portrait
+}
+
+function removeBaseLayer() {
+  if (state.baseLayer) {
+    scene.remove(state.baseLayer);
+    state.baseLayer.geometry.dispose();
+    if (state.baseLayer.material.map) state.baseLayer.material.map.dispose();
+    state.baseLayer.material.dispose();
+    state.baseLayer = null;
+  }
+  state.basePdf = null;
+}
+
+// (Re)build the backing map from cached inputs — used on first generate and
+// whenever the Backing map layer's toggle or title changes.
+function rebuildBaseLayer() {
+  removeBaseLayer();
+  if (cfg.backing.on && state.baseData) {
+    const { bbox, elements, prebaked, M } = state.baseData;
+    buildBaseLayer(bbox, elements, prebaked, M);
+  }
+  updateBaseUI();
+}
+
+// Show the base-map PDF export only when the backing map is switched on.
+function updateBaseUI() {
+  const on = !!cfg.backing.on;
+  if ($('expPdf')) $('expPdf').style.display = on ? 'block' : 'none';
+  if ($('pdfHint')) $('pdfHint').style.display = on ? 'block' : 'none';
 }
 
 /* ============================================================ export */
