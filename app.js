@@ -57,11 +57,11 @@ const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#3a4048', metal: 0.0,  rough: 1.0,  depth: 12 },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
-  majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.5 },
-  minorRoads: { on: true,  color: '#3a4353', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.4 },
+  majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
+  minorRoads: { on: true,  color: '#3a4353', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
   paths:      { on: true,  color: '#55606f', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.3 },
-  green:      { on: true,  color: '#40653c', metal: 0.0,  rough: 1.0,  lift: 0.15 },
-  water:      { on: true,  color: '#3d6fa8', metal: 0.25, rough: 0.35, lift: 0.2 },
+  green:      { on: true,  color: '#40653c', metal: 0.0,  rough: 1.0,  lift: 1.8 },
+  water:      { on: true,  color: '#3d6fa8', metal: 0.25, rough: 0.35, lift: 1.6 },
 };
 
 // One material per layer, updated live by the inspector.
@@ -737,8 +737,9 @@ function densifyLine(pts, maxLen) {
 function clippedRings(poly, project) {
   let outer = clipRingToRect(ringFromGeometry(poly.outer, project), EXT.hx, EXT.hy);
   if (outer.length < 3 || Math.abs(ringArea(outer)) < 1) return null;
-  // council mode: keep the footprint whole if its centre is inside the boundary
-  if (EXT.mask) { const [cx, cy] = centroidOf(outer); if (!pointInRings(cx, cy, EXT.mask)) return null; }
+  // suburb mode: only keep a polygon that sits fully inside the boundary, so
+  // nothing pokes out past the terrain edge as a thin floating sliver
+  if (EXT.mask) { for (const [x, y] of outer) if (!pointInRings(x, y, EXT.mask)) return null; }
   if (ringArea(outer) < 0) outer = outer.slice().reverse();
   const holes = [];
   for (const h of poly.holes || []) {
@@ -845,7 +846,11 @@ function buildCouncilTerrain(groundAt) {
     const base = topPos.length / 3;
     for (const [x, y] of verts) topPos.push(x, groundAt(x, y), -y);
     for (let t = 0; t < tris.length; t += 3) topIdx.push(base + tris[t], base + tris[t + 1], base + tris[t + 2]);
-    // skirt wall + bottom
+    // flat bottom cap: reuse the (concave-correct) triangulation, reversed winding
+    const bb = wallPos.length / 3;
+    for (const [x, y] of verts) wallPos.push(x, bot, -y);
+    for (let t = 0; t < tris.length; t += 3) wallIdx.push(bb + tris[t], bb + tris[t + 2], bb + tris[t + 1]);
+    // skirt wall around the dense outer ring
     const wb = wallPos.length / 3;
     for (const [x, y] of dense) { const g = groundAt(x, y); wallPos.push(x, g, -y); wallPos.push(x, bot, -y); }
     const m = dense.length;
@@ -853,10 +858,6 @@ function buildCouncilTerrain(groundAt) {
       const a = wb + k * 2, b = a + 1, cc = wb + ((k + 1) % m) * 2, d = cc + 1;
       wallIdx.push(a, b, cc, b, d, cc);
     }
-    // bottom cap (fan over the ring's flat bottom)
-    const capBase = wallPos.length / 3;
-    for (const [x, y] of dense) wallPos.push(x, bot, -y);
-    for (let k = 1; k < m - 1; k++) wallIdx.push(capBase, capBase + k + 1, capBase + k);
   }
   const topGeo = new THREE.BufferGeometry();
   topGeo.setAttribute('position', new THREE.Float32BufferAttribute(topPos, 3));
