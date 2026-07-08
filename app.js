@@ -7,6 +7,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+import polygonClipping from 'https://esm.sh/polygon-clipping@0.15.7';
 
 /* ============================================================ state & layer config */
 
@@ -734,21 +735,55 @@ function densifyLine(pts, maxLen) {
 }
 
 // Project → clip to the square → normalise winding. Returns {outer, holes} or null.
+// Normalise winding: outer ring positive area (CCW), holes negative (CW).
+function normaliseRings(outer, holes) {
+  if (ringArea(outer) < 0) outer = outer.slice().reverse();
+  const hs = (holes || []).map(h => ringArea(h) > 0 ? h.slice().reverse() : h);
+  return { outer, holes: hs };
+}
+
+// Intersect a subject polygon (outer + holes) with the suburb mask, so features
+// straddling the boundary are split at the line rather than dropped. Returns an
+// array of {outer, holes} pieces.
+function clipPolyToMask(outer, holes) {
+  const close = r => (r.length && (r[0][0] !== r[r.length - 1][0] || r[0][1] !== r[r.length - 1][1])) ? r.concat([r[0]]) : r;
+  const subject = [close(outer), ...holes.map(close)];
+  const maskMP = EXT.mask.map(r => [close(r)]);
+  let result;
+  try { result = polygonClipping.intersection(subject, maskMP); }
+  catch (e) { return []; }
+  const out = [];
+  for (const p of (result || [])) {
+    if (!p.length || p[0].length < 4) continue;
+    const o = p[0].slice(0, -1);                       // drop closing duplicate
+    if (o.length < 3) continue;
+    const hs = p.slice(1).map(r => r.slice(0, -1)).filter(r => r.length >= 3);
+    out.push(normaliseRings(o, hs));
+  }
+  return out;
+}
+
+// Returns an array of clipped {outer, holes} pieces (empty if nothing remains).
 function clippedRings(poly, project) {
   let outer = clipRingToRect(ringFromGeometry(poly.outer, project), EXT.hx, EXT.hy);
-  if (outer.length < 3 || Math.abs(ringArea(outer)) < 1) return null;
-  // suburb mode: only keep a polygon that sits fully inside the boundary, so
-  // nothing pokes out past the terrain edge as a thin floating sliver
-  if (EXT.mask) { for (const [x, y] of outer) if (!pointInRings(x, y, EXT.mask)) return null; }
-  if (ringArea(outer) < 0) outer = outer.slice().reverse();
+  if (outer.length < 3 || Math.abs(ringArea(outer)) < 1) return [];
   const holes = [];
   for (const h of poly.holes || []) {
-    let r = clipRingToRect(ringFromGeometry(h, project), EXT.hx, EXT.hy);
-    if (r.length < 3) continue;
-    if (ringArea(r) > 0) r = r.slice().reverse();
-    holes.push(r);
+    const r = clipRingToRect(ringFromGeometry(h, project), EXT.hx, EXT.hy);
+    if (r.length >= 3) holes.push(r);
   }
-  return { outer, holes };
+  if (!EXT.mask) return [normaliseRings(outer, holes)];
+
+  // suburb mode: fast path for fully-inside/outside, split only the straddlers
+  let inCount = 0;
+  for (const [x, y] of outer) if (pointInRings(x, y, EXT.mask)) inCount++;
+  if (inCount === outer.length) return [normaliseRings(outer, holes)];       // fully inside
+  if (inCount === 0) {
+    // fully outside unless the (small) mask sits within a large subject polygon
+    const maskTouches = EXT.mask.some(r => r.some(([mx, my]) => pointInRing(mx, my, outer)));
+    if (!maskTouches) return [];
+  }
+  return clipPolyToMask(outer, holes);
 }
 
 /* ---------- terrain block (closed solid: displaced top, skirt, bottom) */
@@ -893,27 +928,27 @@ function buildBuildings(elements, project, groundAt, extraPolys) {
   for (const poly of polys) {
     try {
       footprints.push(ringFromGeometry(poly.outer, project));
-      const rings = clippedRings(poly, project);
-      if (!rings) continue;
       let h = taggedHeight(poly.tags);
       h = (h === null ? c.defH : h) * c.scale + c.extra;
       h = Math.max(h, c.minH, 1);
-      // ground reference + how far the base must sink to sit into the terrain everywhere
-      let minG = Infinity;
-      for (const [x, y] of rings.outer) minG = Math.min(minG, groundAt(x, y));
-      let ground;
-      if (c.fit === 'flat') {
-        ground = minG;
-      } else {
-        const [cx, cy] = centroidOf(rings.outer);
-        ground = groundAt(cx, cy);
+      for (const rings of clippedRings(poly, project)) {   // may be split at the boundary
+        // ground reference + how far the base must sink to sit into the terrain everywhere
+        let minG = Infinity;
+        for (const [x, y] of rings.outer) minG = Math.min(minG, groundAt(x, y));
+        let ground;
+        if (c.fit === 'flat') {
+          ground = minG;
+        } else {
+          const [cx, cy] = centroidOf(rings.outer);
+          ground = groundAt(cx, cy);
+        }
+        const sink = Math.max(1.5, ground - minG + 0.5);
+        const geo = new THREE.ExtrudeGeometry(shapeFromRings(rings.outer, rings.holes), { depth: h + sink, bevelEnabled: false });
+        geo.rotateX(-Math.PI / 2);
+        const mesh = new THREE.Mesh(geo, MATS.buildings);
+        mesh.position.y = ground - sink; // top ends up at ground + h, base below the lowest corner
+        group.add(mesh);
       }
-      const sink = Math.max(1.5, ground - minG + 0.5);
-      const geo = new THREE.ExtrudeGeometry(shapeFromRings(rings.outer, rings.holes), { depth: h + sink, bevelEnabled: false });
-      geo.rotateX(-Math.PI / 2);
-      const mesh = new THREE.Mesh(geo, MATS.buildings);
-      mesh.position.y = ground - sink; // top ends up at ground + h, base below the lowest corner
-      group.add(mesh);
     } catch (e) { /* skip malformed footprints */ }
   }
 
@@ -1099,9 +1134,8 @@ function buildFlatPolys(elements, project, groundAt, layerKey, match) {
   group.name = layerKey;
   const polys = collectPolygons(elements, match);
   for (const poly of polys) {
+   for (const rings of clippedRings(poly, project)) {   // may be split at the boundary
     try {
-      const rings = clippedRings(poly, project);
-      if (!rings) continue;
       const outer = densifyRing(rings.outer, 15);
       const holes = rings.holes.map(h => densifyRing(h, 15));
 
@@ -1142,6 +1176,7 @@ function buildFlatPolys(elements, project, groundAt, layerKey, match) {
       geo.computeVertexNormals();
       group.add(new THREE.Mesh(geo, MATS[layerKey]));
     } catch (e) { /* skip */ }
+   }
   }
   return group;
 }
