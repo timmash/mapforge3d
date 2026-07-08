@@ -414,9 +414,9 @@ const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 // Everything the layer inspector can change lives here.
 const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
-  base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 12 },
+  base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
   backing:    { on: true,  title: 'none', outline: 2 },
-  frame:      { on: true,  material: 'black' },
+  frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
   minorRoads: { on: true,  color: '#3a4353', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
@@ -1964,6 +1964,8 @@ const INSPECTOR = [
   ]},
   { key: 'frame', label: 'Frame', toggle: true, items: [
     ['material', 'Material', 'select', [['black', 'Black'], ['white', 'White'], ['silver', 'Silver'], ['wood', 'Wood texture']]],
+    ['thickness', 'Thickness (mm)', 'range', 2, 40, 1],
+    ['height', 'Height (mm)', 'range', 2, 40, 1],
   ]},
 ];
 
@@ -2360,8 +2362,8 @@ function buildFrame(M) {
   const xHalf = (A3_W / 2) * mPerMM;
   const zNorth = -MODEL_CY_MM * mPerMM;
   const zSouth = (A3_H - MODEL_CY_MM) * mPerMM;
-  const t = 15 * mPerMM;                                 // frame thickness (15 mm)
-  const h = 15 * mPerMM;                                 // frame height (15 mm)
+  const t = (cfg.frame.thickness || 10) * mPerMM;        // frame thickness
+  const h = (cfg.frame.height || 10) * mPerMM;           // frame height
   const yb = -Math.max(0.5, cfg.base.depth) - 0.2;       // base-sheet level
   const y0 = yb, y1 = yb + h;
   const mat = frameMaterial(cfg.frame.material);
