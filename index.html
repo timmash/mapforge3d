@@ -155,6 +155,7 @@
   .ctl-val { flex: 0 0 34px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
   .export-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .export-grid button { font-weight: 600; }
+  .pdf-btn { width: 100%; margin-top: 10px; font-weight: 600; }
   .hint { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
   #status {
     font-size: 12px;
@@ -273,18 +274,20 @@
     </div>
 
     <div class="section">
-      <button class="primary" id="generateBtn">⚡ Generate 3D model</button>
+      <button class="primary" id="generateBtn">Generate 3D model</button>
       <div id="status"></div>
     </div>
 
-    <div class="section">
+    <div class="section" id="exportSection" style="display:none">
       <h2>4 · Export</h2>
       <div class="export-grid">
-        <button id="expGlb" disabled>.GLB</button>
-        <button id="expStl" disabled>.STL</button>
-        <button id="expObj" disabled>.OBJ</button>
+        <button id="expGlb">.GLB</button>
+        <button id="expStl">.STL</button>
+        <button id="expObj">.OBJ</button>
       </div>
-      <p class="hint">GLB (glTF) opens in Blender &amp; most 3D apps, in real-world metres · STL is pre-scaled to 200 mm for 3D printing · OBJ is universally supported (Rhino, SketchUp&nbsp;Pro, Maya…).</p>
+      <p class="hint">GLB (glTF) opens in Blender &amp; most 3D apps, in real-world metres · STL is pre-scaled to 200 mm for 3D printing · OBJ is universally supported (Rhino, SketchUp&nbsp;Pro, Maya…). The grey base sheet is preview-only and is <em>not</em> included in these 3D files.</p>
+      <button id="expPdf" class="pdf-btn">⬇ Base map (PDF, ~297 mm)</button>
+      <p class="hint">A flat greyscale map of the same area, sized so the printed 200 mm model sits on it. Print at 100% scale.</p>
     </div>
 
     <footer>

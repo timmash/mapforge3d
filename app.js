@@ -8,6 +8,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import polygonClipping from 'https://esm.sh/polygon-clipping@0.15.7';
+import { jsPDF } from 'https://esm.sh/jspdf@2.5.1';
 
 /* ============================================================ state & layer config */
 
@@ -859,6 +860,31 @@ function buildTerrainBlock(groundAt) {
   return g;
 }
 
+// Offset a closed ring outward by d metres (average-of-adjacent-edge normals).
+// Keeps the terrain slightly larger than the clipped features so road ribbons
+// that hug the boundary always land on the base rather than floating.
+function bufferRingOutward(ring, d) {
+  let r = ring.slice();
+  if (r.length > 1 && r[0][0] === r[r.length - 1][0] && r[0][1] === r[r.length - 1][1]) r = r.slice(0, -1);
+  const m = r.length;
+  if (m < 3) return ring;
+  const ccw = ringArea(r) > 0;               // outward normal side depends on winding
+  const out = [];
+  for (let i = 0; i < m; i++) {
+    const p = r[(i + m - 1) % m], c = r[i], n = r[(i + 1) % m];
+    const nrm = (ax, ay, bx, by) => { let dx = bx - ax, dy = by - ay; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l; return ccw ? [dy, -dx] : [-dy, dx]; };
+    const n1 = nrm(p[0], p[1], c[0], c[1]), n2 = nrm(c[0], c[1], n[0], n[1]);
+    let mx = n1[0] + n2[0], my = n1[1] + n2[1];
+    const ml = Math.hypot(mx, my);
+    if (ml < 1e-6) { out.push([c[0] + n1[0] * d, c[1] + n1[1] * d]); continue; }
+    mx /= ml; my /= ml;
+    const cosA = Math.max(0.3, mx * n1[0] + my * n1[1]); // miter length d/cos, clamped at sharp corners
+    out.push([c[0] + mx * d / cosA, c[1] + my * d / cosA]);
+  }
+  out.push(out[0].slice());
+  return out;
+}
+
 // Terrain shaped to the council boundary: a thick draped slab per mask ring.
 function buildCouncilTerrain(groundAt) {
   const bot = -Math.max(0.5, cfg.base.depth);
@@ -866,7 +892,7 @@ function buildCouncilTerrain(groundAt) {
   const topPos = [], topIdx = [];        // draped top surface (terrain material)
   const wallPos = [], wallIdx = [];      // skirt walls + flat bottom (base material)
   for (const ringXY of EXT.mask) {
-    let ring = ringXY.slice();
+    let ring = bufferRingOutward(ringXY, 12); // ~ widest road half-width, so roads sit on the base
     if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring = ring.slice(0, -1);
     if (ring.length < 3) continue;
     const dense = densifyRing(ring, 40);
@@ -1405,16 +1431,19 @@ async function generate() {
     state.last = { bbox, elements, sampleElev, minElev, prebaked };
     const counts = swapModel();
 
+    // greyscale base sheet the model sits on (preview only; not in 3D exports)
+    buildBaseLayer(bbox, elements, prebaked);
+
     const d = (state.mode === 'suburb' && state.council) ? 2 * Math.max(EXT.hx, EXT.hy) : state.sizeMeters;
-    camera.position.set(d * 0.75, d * 0.85, d * 0.75);
+    camera.position.set(d * 0.9, d * 0.95, d * 0.9);
     controls.target.set(0, 0, 0);
     controls.update();
-    scene.fog.near = d * 5;
-    scene.fog.far = d * 14;
+    scene.fog.near = d * 6;
+    scene.fog.far = d * 18;
 
     showViewer(true);
     setStatus(statusLine(counts));
-    ['expGlb', 'expStl', 'expObj'].forEach(id => $(id).disabled = false);
+    $('exportSection').style.display = 'block';
   } catch (e) {
     console.error(e);
     setStatus('Generation failed: ' + (e.message || e) + ' — try a smaller area or wait a moment (the free OSM server rate-limits).', true);
@@ -1597,6 +1626,99 @@ function buildInspectorUI() {
 }
 buildInspectorUI();
 
+/* ============================================================ base map layer */
+
+// Draw a flat, greyscale, top-down map of the area onto a canvas. Covers the
+// base sheet extent (1.485× the model, so a 200 mm model → ~297 mm sheet).
+const BASE_FACTOR = 297 / 200; // 1.485
+
+function buildFlatMapCanvas(project, elements, extraBuildingPolys) {
+  const bhx = EXT.hx * BASE_FACTOR, bhy = EXT.hy * BASE_FACTOR;
+  const scale = 2400 / (2 * bhx);                       // px per metre (≈2400px wide)
+  const W = Math.round(2 * bhx * scale), H = Math.round(2 * bhy * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const toPx = ([x, y]) => [(x + bhx) * scale, (bhy - y) * scale];
+  const ringPath = ring => { ctx.moveTo(...toPx(ring[0])); for (let i = 1; i < ring.length; i++) ctx.lineTo(...toPx(ring[i])); ctx.closePath(); };
+
+  ctx.fillStyle = '#d4d4d4'; ctx.fillRect(0, 0, W, H);   // margin / off-map
+  // land shape
+  ctx.fillStyle = '#f5f5f5'; ctx.beginPath();
+  if (EXT.mask) { for (const r of EXT.mask) ringPath(r); }
+  else { const tl = toPx([-EXT.hx, EXT.hy]); ctx.rect(tl[0], tl[1], 2 * EXT.hx * scale, 2 * EXT.hy * scale); }
+  ctx.fill('evenodd');
+
+  const fillPolys = (match, style) => {
+    ctx.fillStyle = style; ctx.beginPath();
+    for (const poly of collectPolygons(elements, match))
+      for (const rings of clippedRings(poly, project)) { ringPath(rings.outer); for (const h of rings.holes) ringPath(h); }
+    ctx.fill('evenodd');
+  };
+  const strokeLines = (predicate, widthFn, style) => {
+    ctx.strokeStyle = style; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const el of elements) {
+      if (el.type !== 'way' || !el.tags || !el.geometry || !predicate(el.tags)) continue;
+      ctx.lineWidth = Math.max(1, widthFn(el.tags) * scale);
+      for (const run of clipLineToExtent(ringFromGeometry(el.geometry, project))) {
+        ctx.beginPath(); ctx.moveTo(...toPx(run[0]));
+        for (let i = 1; i < run.length; i++) ctx.lineTo(...toPx(run[i]));
+        ctx.stroke();
+      }
+    }
+  };
+
+  fillPolys(GREEN_MATCH, '#dcdcdc');
+  fillPolys(WATER_MATCH, '#c6c6c6');
+  strokeLines(t => WATERWAY_WIDTHS[t.waterway] && t.tunnel !== 'yes' && t.tunnel !== 'culvert',
+    t => WATERWAY_WIDTHS[t.waterway], '#c6c6c6');
+  strokeLines(t => t.highway && roadClass(t.highway) === 'paths' && t.area !== 'yes',
+    t => (ROAD_WIDTHS[t.highway] || 5) * cfg.paths.widthScale, '#c8c8c8');
+  strokeLines(t => t.highway && roadClass(t.highway) === 'minorRoads' && t.area !== 'yes',
+    t => (ROAD_WIDTHS[t.highway] || 5) * cfg.minorRoads.widthScale, '#8c8c8c');
+  strokeLines(t => t.highway && roadClass(t.highway) === 'majorRoads' && t.area !== 'yes',
+    t => (ROAD_WIDTHS[t.highway] || 5) * cfg.majorRoads.widthScale, '#6a6a6a');
+
+  // buildings (OSM + any pre-baked)
+  const bpolys = collectPolygons(elements, t => t['building'] !== undefined);
+  if (extraBuildingPolys) bpolys.push(...extraBuildingPolys);
+  ctx.fillStyle = '#9a9a9a'; ctx.beginPath();
+  for (const poly of bpolys) for (const rings of clippedRings(poly, project)) { ringPath(rings.outer); for (const h of rings.holes) ringPath(h); }
+  ctx.fill('evenodd');
+
+  return { canvas, bhx, bhy };
+}
+
+function buildBaseLayer(bbox, elements, prebaked) {
+  const project = makeProjector(bbox.lat0, bbox.lon0);
+  const extra = prebaked ? prebakedToPolys(prebaked, project) : null;
+  const fm = buildFlatMapCanvas(project, elements, extra);
+  const baseY = -Math.max(0.5, cfg.base.depth) - 0.2;   // just under the model
+
+  if (state.baseLayer) {
+    scene.remove(state.baseLayer);
+    state.baseLayer.geometry.dispose();
+    if (state.baseLayer.material.map) state.baseLayer.material.map.dispose();
+    state.baseLayer.material.dispose();
+  }
+  const tex = new THREE.CanvasTexture(fm.canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const bhx = fm.bhx, bhy = fm.bhy;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([
+    -bhx, baseY, -bhy,  bhx, baseY, -bhy,  -bhx, baseY, bhy,  bhx, baseY, bhy], 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 0, 0, 1, 0], 2));
+  g.setIndex([0, 2, 3, 0, 3, 1]);
+  const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+  mesh.name = 'basemap';
+  state.baseLayer = mesh;
+  scene.add(mesh);
+
+  // remember the print sizing: the model's widest side prints at 200 mm
+  const printScale = 200 / Math.max(2 * EXT.hx, 2 * EXT.hy);
+  state.basePdf = { canvas: fm.canvas, wmm: 2 * bhx * printScale, hmm: 2 * bhy * printScale };
+}
+
 /* ============================================================ export */
 
 function download(blob, filename) {
@@ -1625,8 +1747,9 @@ $('expStl').addEventListener('click', () => {
   if (!state.model) return;
   setStatus('Exporting STL…');
   try {
+    const modelMax = Math.max(2 * EXT.hx, 2 * EXT.hy); // model's widest side in metres
     const clone = state.model.clone(true);
-    clone.scale.setScalar(200 / state.sizeMeters);
+    clone.scale.setScalar(200 / modelMax);
     clone.updateMatrixWorld(true);
     const result = new STLExporter().parse(clone, { binary: true });
     download(new Blob([result], { type: 'application/octet-stream' }), state.modelName + '.stl');
@@ -1642,4 +1765,18 @@ $('expObj').addEventListener('click', () => {
     download(new Blob([result], { type: 'text/plain' }), state.modelName + '.obj');
     setStatus('OBJ exported.');
   } catch (e) { setStatus('OBJ export failed: ' + e.message, true); }
+});
+
+$('expPdf').addEventListener('click', () => {
+  if (!state.basePdf) return;
+  setStatus('Exporting base map PDF…');
+  try {
+    const { canvas, wmm, hmm } = state.basePdf;
+    const pdf = new jsPDF({ orientation: wmm >= hmm ? 'l' : 'p', unit: 'mm',
+      format: [Math.min(wmm, hmm), Math.max(wmm, hmm)] });
+    const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight();
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pw, ph);
+    pdf.save(state.modelName + '-basemap.pdf');
+    setStatus(`Base map PDF exported (${pw.toFixed(0)}×${ph.toFixed(0)} mm — print at 100%).`);
+  } catch (e) { setStatus('PDF export failed: ' + e.message, true); }
 });
