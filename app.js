@@ -149,7 +149,7 @@ function initSuburbPicker() {
   }
   sel.addEventListener('change', async () => {
     const slug = sel.value;
-    if (!slug) { clearArea(); updateSelBox(); return; }
+    if (!slug) { clearArea(); if (state.uiMode === 'suburb') $('selBox').style.display = 'none'; else updateSelBox(); return; }
     const suburb = SUBURBS.find(s => s.slug === slug);
     setStatus('');
     setLoading(true, `Finding the ${suburb.name} boundary…`);
@@ -177,6 +177,30 @@ function initSuburbPicker() {
   });
 }
 initSuburbPicker();
+
+/* ---------- mode toggle (Suburb / Custom) ---------- */
+
+state.uiMode = 'suburb';
+function setMode(mode) {
+  state.uiMode = mode;
+  const suburb = mode === 'suburb';
+  $('suburbPanel').style.display = suburb ? 'block' : 'none';
+  $('customPanel').style.display = suburb ? 'none' : 'block';
+  $('modeSuburb').classList.toggle('active', suburb);
+  $('modeCustom').classList.toggle('active', !suburb);
+  if (suburb) {
+    // Suburb mode: no square selection on the map.
+    $('selBox').style.display = 'none';
+    if (state.council) state.mode = 'suburb';
+  } else {
+    // Custom mode: reset to a square selection the user pans over the map.
+    clearArea();          // → square mode, clears any suburb, shows selBox
+    updateSelBox();
+  }
+}
+$('modeSuburb').addEventListener('click', () => setMode('suburb'));
+$('modeCustom').addEventListener('click', () => setMode('custom'));
+setMode('suburb');        // default view
 
 /* ============================================================ search */
 
@@ -1391,6 +1415,10 @@ function setLoading(on, text) {
 }
 
 async function generate() {
+  if (state.uiMode === 'suburb' && !state.council) {
+    setStatus('Choose a suburb from the dropdown first — or switch to Custom mode to build a square area.', true);
+    return;
+  }
   const bbox = currentBBox();
   $('generateBtn').disabled = true;
   setStatus('');
