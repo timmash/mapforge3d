@@ -60,8 +60,8 @@ const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 // Everything the layer inspector can change lives here.
 const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
-  base:       {            color: '#3a4048', metal: 0.0,  rough: 1.0,  depth: 12 },
-  backing:    { on: true,  title: 'none' },
+  base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 12 },
+  backing:    { on: true,  title: 'none', outline: 5 },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
   minorRoads: { on: true,  color: '#3a4353', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
@@ -1603,6 +1603,7 @@ const INSPECTOR = [
   ]},
   { key: 'backing', label: 'Backing map', toggle: true, items: [
     ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title']]],
+    ['outline', 'White outline (mm)', 'range', 0, 20, 0.5],
   ]},
 ];
 
@@ -1835,8 +1836,9 @@ function backingTitleText() {
       || (state.placeLabels && state.placeLabels.postcode) || '';
   }
   if (mode === 'suburb') {
-    return (state.council && state.council.name)
+    const name = (state.council && state.council.name)
       || (state.placeLabels && state.placeLabels.suburb) || '';
+    return name.toUpperCase();
   }
   return '';
 }
@@ -1851,9 +1853,10 @@ function drawBackingTitle(ctx, text, s, pxmm) {
   const yMM = modelTopMM - bandMM / 2;                   // centre of that band
 
   ctx.save();
-  ctx.fillStyle = '#7a7a7a';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
   // fit the font size so the rendered text is exactly the model's width
   let fs = 100;
   ctx.font = `700 ${fs}px "Segoe UI", system-ui, -apple-system, sans-serif`;
@@ -1862,7 +1865,16 @@ function drawBackingTitle(ctx, text, s, pxmm) {
   // keep it from overflowing the band's height
   fs = Math.min(fs, bandMM * 0.7 * pxmm);
   ctx.font = `700 ${fs}px "Segoe UI", system-ui, -apple-system, sans-serif`;
-  ctx.fillText(text, MODEL_CX_MM * pxmm, yMM * pxmm);
+  const cx = MODEL_CX_MM * pxmm, cy = yMM * pxmm;
+  // white outline (adjustable) drawn behind the grey fill
+  const outlineMM = cfg.backing.outline || 0;
+  if (outlineMM > 0) {
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = outlineMM * pxmm;
+    ctx.strokeText(text, cx, cy);
+  }
+  ctx.fillStyle = '#7a7a7a';
+  ctx.fillText(text, cx, cy);
   ctx.restore();
 }
 
