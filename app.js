@@ -7,6 +7,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 import polygonClipping from 'https://esm.sh/polygon-clipping@0.15.7';
 import { jsPDF } from 'https://esm.sh/jspdf@2.5.1';
 
@@ -23,6 +25,8 @@ const state = {
   baseData: null,    // cached inputs for rebuilding the backing map: {bbox, elements, prebaked, M}
   placeLabels: null, // { suburb, postcode } for the backing-map title (best-effort)
   frame: null,       // THREE.Group of the decorative frame (preview only)
+  titleObj: null,    // THREE.Mesh of the raised 3D title (preview + separate export)
+  maxGround: 0,      // highest terrain elevation of the map, relative metres
 };
 
 // Greater-Melbourne suburbs. The slug matches the optional pre-baked footprints
@@ -62,7 +66,7 @@ const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
-  backing:    { on: true,  title: 'none', outline: 2 },
+  backing:    { on: true,  title: 'suburb', outline: 2, title3d: false },
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
@@ -1389,7 +1393,7 @@ function scheduleRebuild() {
 // Route a layer control change to the right rebuild. The backing map is not part
 // of the exported 3D model, so it rebuilds independently of the model geometry.
 function layerChanged(key) {
-  if (key === 'backing') rebuildBaseLayer();
+  if (key === 'backing') { rebuildBaseLayer(); rebuildTitle3D(); }
   else if (key === 'frame') rebuildFrame();
   else scheduleRebuild();
 }
@@ -1502,17 +1506,21 @@ async function generate() {
     setLoading(true, 'Building 3D geometry…');
     await new Promise(r => setTimeout(r, 30));
 
-    let minElev = 0;
+    let minElev = 0, maxElev = 0;
     if (sampleElev) {
-      minElev = Infinity;
+      minElev = Infinity; maxElev = -Infinity;
       for (let j = 0; j <= 16; j++) {
         for (let i = 0; i <= 16; i++) {
           const lat = bbox.south + (bbox.north - bbox.south) * j / 16;
           const lon = bbox.west + (bbox.east - bbox.west) * i / 16;
-          minElev = Math.min(minElev, sampleElev(lat, lon));
+          const e = sampleElev(lat, lon);
+          minElev = Math.min(minElev, e);
+          maxElev = Math.max(maxElev, e);
         }
       }
     }
+    // highest terrain elevation of the map (relative metres, exaggeration applied)
+    state.maxGround = sampleElev ? Math.max(0, (maxElev - minElev)) * cfg.terrain.exag : 0;
 
     state.last = { bbox, elements, sampleElev, minElev, prebaked };
     const counts = swapModel();
@@ -1538,6 +1546,7 @@ async function generate() {
     state.baseData = { bbox, elements: baseElements, prebaked, M };
     rebuildBaseLayer();
     rebuildFrame();
+    rebuildTitle3D();
 
     const d = (state.mode === 'suburb' && state.council) ? 2 * Math.max(EXT.hx, EXT.hy) : state.sizeMeters;
     camera.position.set(d * 0.9, d * 0.95, d * 0.9);
@@ -1607,6 +1616,7 @@ const INSPECTOR = [
   ]},
   { key: 'backing', label: 'Backing map', toggle: true, items: [
     ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title']]],
+    ['title3d', '3D printable title', 'check'],
     ['outline', 'White outline (mm)', 'range', 0, 20, 0.5],
   ]},
   { key: 'frame', label: 'Frame', toggle: true, items: [
@@ -2031,6 +2041,94 @@ function rebuildFrame() {
   if (cfg.frame.on && state.baseData) buildFrame(state.baseData.M);
 }
 
+/* ---------- 3D printable title (preview + separate export) ---------- */
+
+let _titleFont = null, _titleFontPromise = null;
+function loadTitleFont() {
+  if (_titleFont) return Promise.resolve(_titleFont);
+  if (!_titleFontPromise) {
+    _titleFontPromise = new Promise((resolve, reject) => {
+      new FontLoader().load(
+        'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_bold.typeface.json',
+        f => { _titleFont = f; resolve(f); }, undefined, reject);
+    });
+  }
+  return _titleFontPromise;
+}
+
+function removeTitle3D() {
+  if (state.titleObj) {
+    scene.remove(state.titleObj);
+    if (state.titleObj.geometry) state.titleObj.geometry.dispose();
+    if (state.titleObj.material) state.titleObj.material.dispose();
+    state.titleObj = null;
+  }
+}
+
+// Build an extruded 3D version of the suburb/postcode title, standing on the
+// base sheet in the band north of the model. Its standing height equals the
+// map's highest elevation. Added to the scene only (not state.model), so it is
+// excluded from the main 3D exports and printed base map — it has its own export.
+async function buildTitle3D() {
+  const text = backingTitleText();
+  if (!text || !state.baseData) return;
+  let font;
+  try { font = await loadTitleFont(); }
+  catch (e) { console.warn('Title font failed to load', e); setStatus('Could not load the 3D title font.', true); return; }
+  // guard against a stale rebuild (toggle flipped off while the font loaded)
+  if (!cfg.backing.title3d || !cfg.backing.on) return;
+
+  const M = state.baseData.M;
+  const s = MODEL_PRINT_MM / M;          // mm per metre
+  const mPerMM = 1 / s;
+  const depth = Math.max(state.maxGround || 0, 15);     // standing height = highest elevation
+
+  // size the glyphs so the word's width matches the model footprint width
+  const targetW = 2 * EXT.hx;
+  let geo = new TextGeometry(text, { font, size: 100, height: depth, curveSegments: 5, bevelEnabled: false });
+  geo.computeBoundingBox();
+  let w = geo.boundingBox.max.x - geo.boundingBox.min.x || 1;
+  const size = 100 * targetW / w;
+  geo.dispose();
+  geo = new TextGeometry(text, { font, size, height: depth, curveSegments: 5, bevelEnabled: false });
+
+  // orient upright: extrusion (+z) → world +y (up); letter faces read from above
+  geo.rotateX(-Math.PI / 2);
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox;
+
+  // place centred over the model (world x=0) in the title band north of the model
+  const modelTopMM = MODEL_CY_MM - EXT.hy * s;
+  const titleYmm = modelTopMM / 2;
+  const worldZ = (titleYmm - MODEL_CY_MM) * mPerMM;
+  const yb = -Math.max(0.5, cfg.base.depth) - 0.2;      // base level
+  geo.translate(
+    0 - (bb.min.x + bb.max.x) / 2,
+    yb - bb.min.y,
+    worldZ - (bb.min.z + bb.max.z) / 2,
+  );
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({ color: 0xcfd6e0, roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'title3d';
+  state.titleObj = mesh;
+  scene.add(mesh);
+}
+
+function rebuildTitle3D() {
+  removeTitle3D();
+  if (cfg.backing.on && cfg.backing.title3d && state.baseData) buildTitle3D();
+  updateTitleExportUI();
+}
+
+// Show the separate 3D-title export only when the 3D title is switched on.
+function updateTitleExportUI() {
+  const on = !!(cfg.backing.on && cfg.backing.title3d);
+  if ($('expTitle')) $('expTitle').style.display = on ? 'block' : 'none';
+  if ($('titleHint')) $('titleHint').style.display = on ? 'block' : 'none';
+}
+
 /* ============================================================ export */
 
 function download(blob, filename) {
@@ -2091,4 +2189,18 @@ $('expPdf').addEventListener('click', () => {
     pdf.save(state.modelName + '-basemap.pdf');
     setStatus(`Base map PDF exported (${pw.toFixed(0)}×${ph.toFixed(0)} mm — print at 100%).`);
   } catch (e) { setStatus('PDF export failed: ' + e.message, true); }
+});
+
+$('expTitle').addEventListener('click', () => {
+  if (!state.titleObj) { setStatus('Turn on the 3D printable title first.', true); return; }
+  setStatus('Exporting 3D title…');
+  try {
+    const modelMax = Math.max(2 * EXT.hx, 2 * EXT.hy); // same scale as the model STL
+    const clone = state.titleObj.clone(true);
+    clone.scale.setScalar(200 / modelMax);
+    clone.updateMatrixWorld(true);
+    const result = new STLExporter().parse(clone, { binary: true });
+    download(new Blob([result], { type: 'application/octet-stream' }), state.modelName + '-title.stl');
+    setStatus('3D title exported (scaled to match the 200 mm model).');
+  } catch (e) { setStatus('Title export failed: ' + e.message, true); }
 });
