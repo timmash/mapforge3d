@@ -102,6 +102,14 @@ const LAYER_LABELS = {
   terrain: 'Terrain', base: 'Base block',
 };
 
+// A3 base sheet layout (portrait, north up, mm). The 3D model prints at 200 mm on
+// its widest side and sits centred in the lower two-thirds of the sheet. Declared
+// early so nothing downstream can hit them before initialisation.
+const A3_W = 297, A3_H = 420;
+const MODEL_PRINT_MM = 200;             // model's widest side, printed
+const MODEL_CX_MM = A3_W / 2;           // 148.5 — model centred horizontally
+const MODEL_CY_MM = A3_H * 2 / 3;       // 280 — middle of the bottom two-thirds
+
 const $ = (id) => document.getElementById(id);
 
 /* ============================================================ request cache
@@ -1631,7 +1639,7 @@ async function generate() {
   }
 }
 $('generateBtn').addEventListener('click', generate);
-$('clearCache').addEventListener('click', clearRequestCache);
+$('clearCache')?.addEventListener('click', clearRequestCache);
 
 /* ============================================================ layer inspector UI */
 
@@ -1840,13 +1848,6 @@ buildInspectorUI();
 loadTitleFont().catch(() => {});
 
 /* ============================================================ base map layer */
-
-// A3 base sheet layout (portrait, north up, mm). The 3D model prints at 200 mm
-// on its widest side and sits centred in the lower two-thirds of the sheet.
-const A3_W = 297, A3_H = 420;
-const MODEL_PRINT_MM = 200;             // model's widest side, printed
-const MODEL_CX_MM = A3_W / 2;           // 148.5 — model centred horizontally
-const MODEL_CY_MM = A3_H * 2 / 3;       // 280 — middle of the bottom two-thirds
 
 // lat/lon bbox covering the whole A3 sheet at the model's print scale, so we can
 // fetch the surrounding map that extends beyond the 3D render.
@@ -2425,7 +2426,7 @@ function exportTitle3MF() {
   } catch (e) { console.error(e); setStatus('3D text export failed: ' + e.message, true); }
 }
 
-$('expGlb').addEventListener('click', () => {
+$('expGlb')?.addEventListener('click', () => {
   if (!state.model) return;
   setStatus('Exporting GLB…');
   new GLTFExporter().parse(
@@ -2439,7 +2440,7 @@ $('expGlb').addEventListener('click', () => {
   );
 });
 
-$('expStl').addEventListener('click', () => {
+$('expStl')?.addEventListener('click', () => {
   if (!state.model) return;
   setStatus('Exporting STL…');
   try {
@@ -2454,7 +2455,7 @@ $('expStl').addEventListener('click', () => {
   } catch (e) { setStatus('STL export failed: ' + e.message, true); }
 });
 
-$('expObj').addEventListener('click', () => {
+$('expObj')?.addEventListener('click', () => {
   if (!state.model) return;
   setStatus('Exporting OBJ…');
   try {
@@ -2464,7 +2465,7 @@ $('expObj').addEventListener('click', () => {
   } catch (e) { setStatus('OBJ export failed: ' + e.message, true); }
 });
 
-$('exp3mf').addEventListener('click', exportColour3MF);
+$('exp3mf')?.addEventListener('click', exportColour3MF);
 
 function exportBasePdf() {
   if (!state.basePdf) { setStatus('Turn on the Backing map layer first.', true); return; }
@@ -2479,8 +2480,8 @@ function exportBasePdf() {
     setStatus(`Base map PDF exported (${pw.toFixed(0)}×${ph.toFixed(0)} mm — print at 100%).`);
   } catch (e) { setStatus('PDF export failed: ' + e.message, true); }
 }
-$('expPdf').addEventListener('click', exportBasePdf);
-$('expTitle').addEventListener('click', exportTitle3MF);
+$('expPdf')?.addEventListener('click', exportBasePdf);
+$('expTitle')?.addEventListener('click', exportTitle3MF);
 
 // download menu on the 3D view
 document.querySelectorAll('#dlOptions button').forEach(b => {
