@@ -151,6 +151,17 @@
   }
   #councilSelect:focus { border-color: var(--accent); outline: none; }
   /* ---------- layer inspector ---------- */
+  .layer-group {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 12px 0 7px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .layer-group:first-child { margin-top: 0; }
   .layer { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; overflow: hidden; }
   .layer-head {
     display: flex; align-items: center; gap: 8px;
@@ -390,6 +401,12 @@
       <p class="hint" id="pdfHint">A flat greyscale map on an A3 sheet (297 × 420 mm, north up), sized so the printed 200 mm model sits in the lower two-thirds at 1:1. Print at 100% scale on A3.</p>
       <button id="expTitle" class="pdf-btn" style="display:none">Download 3D title (3MF)</button>
       <p class="hint" id="titleHint" style="display:none">The raised suburb/postcode title as a separate 3D-printable 3MF, pre-scaled to match the 200 mm model. Its height equals the map's highest elevation.</p>
+    </div>
+
+    <div class="section">
+      <h2>Cache</h2>
+      <button id="clearCache" style="width:100%">Clear cached map data</button>
+      <p class="hint">Elevation tiles and OpenStreetMap lookups are cached in your browser for 30 days, so revisiting an area doesn't re-download it. Clear it to free space or force fresh data.</p>
     </div>
 
     <footer>

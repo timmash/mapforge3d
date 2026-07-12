@@ -104,6 +104,46 @@ const LAYER_LABELS = {
 
 const $ = (id) => document.getElementById(id);
 
+/* ============================================================ request cache
+
+   A 30-day client-side cache (Cache Storage API) for the heavy, repeat-friendly
+   network resources: AWS terrain-elevation tiles, Overpass results and Nominatim
+   lookups. Cuts repeat downloads on revisits and is a good citizen towards the
+   free community servers. Cleared on demand from the sidebar. (The Carto 2D
+   basemap is cached separately by MapLibre / the browser HTTP cache.)            */
+
+const CACHE_NAME = 'mapforge-cache-v1';
+const CACHE_TTL = 30 * 24 * 60 * 60 * 1000;   // 30 days
+const CACHE_OK = (typeof caches !== 'undefined');
+
+async function cachedResponse(key, doFetch) {
+  if (!CACHE_OK) return doFetch();
+  let cache;
+  try { cache = await caches.open(CACHE_NAME); } catch (e) { return doFetch(); }
+  try {
+    const hit = await cache.match(key);
+    if (hit && Date.now() - Number(hit.headers.get('x-cached-at') || 0) < CACHE_TTL) return hit.clone();
+  } catch (e) { /* fall through to network */ }
+  const resp = await doFetch();
+  try {
+    if (resp && resp.ok) {
+      const buf = await resp.clone().arrayBuffer();
+      const h = new Headers();
+      h.set('x-cached-at', String(Date.now()));
+      const ct = resp.headers.get('Content-Type'); if (ct) h.set('Content-Type', ct);
+      await cache.put(key, new Response(buf, { status: 200, headers: h }));
+    }
+  } catch (e) { /* over quota etc — ignore, still return the live response */ }
+  return resp;
+}
+const cachedFetch = (url, opts) => cachedResponse(url, () => fetch(url, opts));
+
+async function clearRequestCache() {
+  if (!CACHE_OK) { setStatus('Caching isn’t available in this context.', true); return; }
+  try { await caches.delete(CACHE_NAME); setStatus('Cached map data cleared.'); }
+  catch (e) { setStatus('Could not clear the cache: ' + (e.message || e), true); }
+}
+
 /* ============================================================ 2D map */
 
 const map = new maplibregl.Map({
@@ -246,7 +286,7 @@ async function doSearch() {
   box.innerHTML = '<div class="search-result">Searching…</div>';
   try {
     const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q);
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const res = await cachedFetch(url, { headers: { 'Accept': 'application/json' } });
     const results = await res.json();
     box.innerHTML = '';
     if (!results.length) {
@@ -355,7 +395,7 @@ async function fetchSuburbBoundary(name) {
   const url = 'https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&addressdetails=1'
     + '&limit=8&viewbox=144.30,-38.55,145.90,-37.35&bounded=1&q='
     + encodeURIComponent(name + ', Victoria, Australia');
-  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  const res = await cachedFetch(url, { headers: { 'Accept': 'application/json' } });
   if (!res.ok) throw new Error('Nominatim HTTP ' + res.status);
   const results = await res.json();
   if (!results.length) throw new Error('suburb "' + name + '" not found');
@@ -397,7 +437,7 @@ async function ensurePlaceLabels(bbox) {
   try {
     const url = 'https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&zoom=14'
       + '&lat=' + bbox.lat0 + '&lon=' + bbox.lon0;
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const res = await cachedFetch(url, { headers: { 'Accept': 'application/json' } });
     if (!res.ok) throw new Error('reverse HTTP ' + res.status);
     const a = (await res.json()).address || {};
     state.placeLabels = {
@@ -569,19 +609,24 @@ async function fetchOSM(bbox) {
   ];
   const query = `[out:json][timeout:60];(${parts.join('')});out geom;`;
 
-  let lastErr;
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        body: 'data=' + encodeURIComponent(query),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      });
-      if (!res.ok) throw new Error('Overpass HTTP ' + res.status);
-      return await res.json();
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr || new Error('Overpass unavailable');
+  // cache by the query (bbox-derived) so re-generating the same area is instant
+  const key = 'https://mapforge.cache/overpass?v=1&q=' + encodeURIComponent(query);
+  const res = await cachedResponse(key, async () => {
+    let lastErr;
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+      try {
+        const r = await fetch(endpoint, {
+          method: 'POST',
+          body: 'data=' + encodeURIComponent(query),
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        });
+        if (!r.ok) throw new Error('Overpass HTTP ' + r.status);
+        return r;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error('Overpass unavailable');
+  });
+  return await res.json();
 }
 
 /* ============================================================ terrain */
@@ -619,13 +664,12 @@ async function buildElevationSampler(bbox) {
   for (let tx = txMin; tx <= txMax; tx++) {
     for (let ty = tyMin; ty <= tyMax; ty++) {
       jobs.push((async () => {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        await new Promise((ok, bad) => {
-          img.onload = ok; img.onerror = bad;
-          img.src = TERRAIN_URL(z, tx, ty);
-        });
-        ctx.drawImage(img, (tx - txMin) * T, (ty - tyMin) * T);
+        // cached (30-day) fetch → bitmap, so repeat generations don't re-download tiles
+        const resp = await cachedFetch(TERRAIN_URL(z, tx, ty));
+        if (!resp || !resp.ok) throw new Error('elevation tile ' + z + '/' + tx + '/' + ty);
+        const bmp = await createImageBitmap(await resp.blob());
+        ctx.drawImage(bmp, (tx - txMin) * T, (ty - tyMin) * T);
+        if (bmp.close) bmp.close();
       })());
     }
   }
@@ -1587,12 +1631,13 @@ async function generate() {
   }
 }
 $('generateBtn').addEventListener('click', generate);
+$('clearCache').addEventListener('click', clearRequestCache);
 
 /* ============================================================ layer inspector UI */
 
 // Control kinds: color | range | select | toggleRow (layer visibility lives in the header)
 const INSPECTOR = [
-  { key: 'buildings', label: 'Buildings', toggle: true, items: [
+  { key: 'buildings', label: 'Buildings', toggle: true, group: '3D Suburb', items: [
     ['color', 'Colour', 'color'],
     ['nodes', 'Unmapped buildings (address nodes)', 'check'],
     ['nodeSize', 'Unmapped box size (m)', 'range', 4, 30, 1],
@@ -1632,12 +1677,12 @@ const INSPECTOR = [
     ['color', 'Base colour', 'color', { ck: 'base' }],
     ['depth', 'Base depth (m)', 'range', 1, 100, 1, { ck: 'base' }],
   ]},
-  { key: 'backing', label: 'Backing map', toggle: true, items: [
+  { key: 'backing', label: 'Backing map', toggle: true, group: 'Printable map', items: [
     ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title']]],
     ['title3d', '3D printable title', 'check'],
     ['outline', 'White outline (mm)', 'range', 0, 20, 0.5],
   ]},
-  { key: 'frame', label: 'Frame', toggle: true, items: [
+  { key: 'frame', label: 'Frame', toggle: true, group: 'Other', items: [
     ['material', 'Material', 'select', [['black', 'Black'], ['white', 'White'], ['silver', 'Silver'], ['wood', 'Wood texture']]],
     ['thickness', 'Thickness (mm)', 'range', 2, 40, 1],
     ['height', 'Height (mm)', 'range', 2, 40, 1],
@@ -1661,6 +1706,12 @@ function buildInspectorUI() {
   const host = $('layersUI');
   for (const layer of INSPECTOR) {
     const c = cfg[layer.key];
+    if (layer.group) {
+      const sub = document.createElement('div');
+      sub.className = 'layer-group';
+      sub.textContent = layer.group;
+      host.appendChild(sub);
+    }
     const wrap = document.createElement('div');
     wrap.className = 'layer';
 
