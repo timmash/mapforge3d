@@ -11,6 +11,7 @@ import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 import polygonClipping from 'https://esm.sh/polygon-clipping@0.15.7';
 import { jsPDF } from 'https://esm.sh/jspdf@2.5.1';
+import { zipSync, strToU8 } from 'https://esm.sh/fflate@0.8.2';
 
 /* ============================================================ state & layer config */
 
@@ -70,7 +71,7 @@ const cfg = {
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
-  minorRoads: { on: true,  color: '#3a4353', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
+  minorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
   paths:      { on: true,  color: '#55606f', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.3 },
   green:      { on: true,  color: '#40653c', metal: 0.0,  rough: 1.0,  lift: 1.8 },
   water:      { on: true,  color: '#3d6fa8', metal: 0.25, rough: 0.35, lift: 1.6 },
@@ -151,7 +152,6 @@ function clearArea() {
   state.council = null;
   clearAreaOutline();
   $('selBox').style.display = (state.uiMode === 'custom' && state.sizeMeters) ? 'block' : 'none';
-  $('councilHint').style.display = 'none';
   const sel = $('councilSelect'); if (sel) sel.value = '';
 }
 
@@ -188,9 +188,6 @@ function initSuburbPicker() {
       drawAreaOutline(b.ll);
       $('selBox').style.display = 'none';
       map.fitBounds([[b.bbox.west, b.bbox.south], [b.bbox.east, b.bbox.north]], { padding: 40, duration: 800 });
-      const hint = $('councilHint');
-      hint.style.display = 'block';
-      hint.textContent = `Suburb mode: the whole of ${suburb.name} will be built to its real boundary. Real footprints load automatically if you've added buildings/${suburb.slug}.buildings.json.`;
     } catch (e) {
       setStatus('Could not load that suburb boundary: ' + (e.message || e), true);
       clearArea();
@@ -1454,9 +1451,10 @@ function resizeViewer() {
 function showViewer(on) {
   $('viewer').style.display = on ? 'block' : 'none';
   $('map').style.display = on ? 'none' : 'block';
-  $('selBox').style.display = on ? 'none' : 'block';
   $('backBtn').style.display = on ? 'block' : 'none';
-  if (on) resizeViewer(); else map.resize();
+  $('dlMenu').style.display = on ? 'block' : 'none';
+  if (on) { $('selBox').style.display = 'none'; resizeViewer(); }
+  else { updateSelBox(); map.resize(); }
 }
 $('backBtn').addEventListener('click', () => showViewer(false));
 
@@ -1892,7 +1890,7 @@ function drawBackingTitle(ctx, text, s, pxmm) {
     ctx.lineWidth = outlineMM * pxmm;
     ctx.strokeText(text, cx, cy);
   }
-  ctx.fillStyle = '#7a7a7a';
+  ctx.fillStyle = cfg.majorRoads.color;   // title matches the road colour
   ctx.fillText(text, cx, cy);
   ctx.restore();
 }
@@ -2109,7 +2107,7 @@ async function buildTitle3D() {
   );
   geo.computeVertexNormals();
 
-  const mat = new THREE.MeshStandardMaterial({ color: 0xcfd6e0, roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide });
+  const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(cfg.majorRoads.color), roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'title3d';
   state.titleObj = mesh;
@@ -2139,6 +2137,93 @@ function download(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
+// Export the model as a colour 3MF: one object per layer colour, each tagged with
+// its own base material so Bambu Studio (and other slicers) keep the layer colours
+// and can map them to filaments/AMS. Oriented Z-up so it loads flat with the
+// buildings on top, and pre-scaled so the model is 200 mm across (like the STL).
+function writeColour3MF(root, filename) {
+  const modelMax = Math.max(2 * EXT.hx, 2 * EXT.hy);
+  const scale = 200 / modelMax;
+  root.updateMatrixWorld(true);
+
+  // group all triangles by material colour (in world space)
+  const groups = new Map();
+  const v = new THREE.Vector3();
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, minZ = Infinity, maxZ = -Infinity;
+  root.traverse(o => {
+    if (!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
+    const col = (o.material && o.material.color) ? o.material.color.getHexString() : 'cccccc';
+    let g = groups.get(col);
+    if (!g) { g = { color: col, verts: [], tris: [] }; groups.set(col, g); }
+    const pos = o.geometry.attributes.position, idx = o.geometry.index;
+    const base = g.verts.length / 3;
+    for (let i = 0; i < pos.count; i++) {
+      v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(o.matrixWorld);
+      g.verts.push(v.x, v.y, v.z);
+      if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+      if (v.y < minY) minY = v.y;
+      if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+    }
+    if (idx) for (let i = 0; i < idx.count; i += 3) g.tris.push(base + idx.getX(i), base + idx.getX(i + 1), base + idx.getX(i + 2));
+    else for (let i = 0; i < pos.count; i += 3) g.tris.push(base + i, base + i + 1, base + i + 2);
+  });
+  if (!groups.size) { setStatus('Nothing to export.', true); return 0; }
+
+  const midX = (minX + maxX) / 2, midZ = (minZ + maxZ) / 2;
+  // three (x,y,z) → 3MF Z-up (X,Y,Z): rotate Y→Z (flat, buildings up),
+  // centre in X/Y and drop the base onto Z=0, then scale to mm.
+  const mapV = (x, y, z) => [((x - midX) * scale), (-(z - midZ) * scale), ((y - minY) * scale)];
+
+  const arr = [...groups.values()];
+  const matXml = arr.map((g, i) => `<base name="layer_${i}" displaycolor="#${g.color.toUpperCase()}FF"/>`).join('');
+  let objXml = '', itemXml = '';
+  arr.forEach((g, i) => {
+    const oid = i + 2;
+    const vs = [];
+    for (let k = 0; k < g.verts.length; k += 3) {
+      const p = mapV(g.verts[k], g.verts[k + 1], g.verts[k + 2]);
+      vs.push(`<vertex x="${p[0].toFixed(3)}" y="${p[1].toFixed(3)}" z="${p[2].toFixed(3)}"/>`);
+    }
+    const ts = [];
+    for (let k = 0; k < g.tris.length; k += 3) ts.push(`<triangle v1="${g.tris[k]}" v2="${g.tris[k + 1]}" v3="${g.tris[k + 2]}"/>`);
+    objXml += `<object id="${oid}" type="model" pid="1" pindex="${i}"><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`;
+    itemXml += `<item objectid="${oid}"/>`;
+  });
+
+  const model = `<?xml version="1.0" encoding="UTF-8"?>\n`
+    + `<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">`
+    + `<resources><basematerials id="1">${matXml}</basematerials>${objXml}</resources>`
+    + `<build>${itemXml}</build></model>`;
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>`;
+  const rels = `<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
+
+  const zipped = zipSync({
+    '[Content_Types].xml': strToU8(contentTypes),
+    '_rels/.rels': strToU8(rels),
+    '3D/3dmodel.model': strToU8(model),
+  });
+  download(new Blob([zipped], { type: 'model/3mf' }), filename);
+  return arr.length;
+}
+
+function exportColour3MF() {
+  if (!state.model) return;
+  setStatus('Exporting colour 3MF…');
+  try {
+    const n = writeColour3MF(state.model, state.modelName + '.3mf');
+    if (n) setStatus(`Colour 3MF exported — ${n} colour groups, flat, 200 mm across.`);
+  } catch (e) { console.error(e); setStatus('3MF export failed: ' + e.message, true); }
+}
+
+function exportTitle3MF() {
+  if (!state.titleObj) { setStatus('Turn on the 3D printable title first.', true); return; }
+  setStatus('Exporting 3D text 3MF…');
+  try {
+    writeColour3MF(state.titleObj, state.modelName + '-title.3mf');
+    setStatus('3D text 3MF exported (flat, scaled to match the 200 mm model).');
+  } catch (e) { console.error(e); setStatus('3D text export failed: ' + e.message, true); }
+}
+
 $('expGlb').addEventListener('click', () => {
   if (!state.model) return;
   setStatus('Exporting GLB…');
@@ -2159,11 +2244,12 @@ $('expStl').addEventListener('click', () => {
   try {
     const modelMax = Math.max(2 * EXT.hx, 2 * EXT.hy); // model's widest side in metres
     const clone = state.model.clone(true);
+    clone.rotation.x = Math.PI / 2;         // Y-up → Z-up so it loads flat, buildings up
     clone.scale.setScalar(200 / modelMax);
     clone.updateMatrixWorld(true);
     const result = new STLExporter().parse(clone, { binary: true });
     download(new Blob([result], { type: 'application/octet-stream' }), state.modelName + '.stl');
-    setStatus('STL exported (scaled to 200 mm across).');
+    setStatus('STL exported (single colour, flat, scaled to 200 mm across).');
   } catch (e) { setStatus('STL export failed: ' + e.message, true); }
 });
 
@@ -2177,8 +2263,10 @@ $('expObj').addEventListener('click', () => {
   } catch (e) { setStatus('OBJ export failed: ' + e.message, true); }
 });
 
-$('expPdf').addEventListener('click', () => {
-  if (!state.basePdf) return;
+$('exp3mf').addEventListener('click', exportColour3MF);
+
+function exportBasePdf() {
+  if (!state.basePdf) { setStatus('Turn on the Backing map layer first.', true); return; }
   setStatus('Exporting base map PDF…');
   try {
     const { canvas, wmm, hmm } = state.basePdf;
@@ -2189,18 +2277,16 @@ $('expPdf').addEventListener('click', () => {
     pdf.save(state.modelName + '-basemap.pdf');
     setStatus(`Base map PDF exported (${pw.toFixed(0)}×${ph.toFixed(0)} mm — print at 100%).`);
   } catch (e) { setStatus('PDF export failed: ' + e.message, true); }
-});
+}
+$('expPdf').addEventListener('click', exportBasePdf);
+$('expTitle').addEventListener('click', exportTitle3MF);
 
-$('expTitle').addEventListener('click', () => {
-  if (!state.titleObj) { setStatus('Turn on the 3D printable title first.', true); return; }
-  setStatus('Exporting 3D title…');
-  try {
-    const modelMax = Math.max(2 * EXT.hx, 2 * EXT.hy); // same scale as the model STL
-    const clone = state.titleObj.clone(true);
-    clone.scale.setScalar(200 / modelMax);
-    clone.updateMatrixWorld(true);
-    const result = new STLExporter().parse(clone, { binary: true });
-    download(new Blob([result], { type: 'application/octet-stream' }), state.modelName + '-title.stl');
-    setStatus('3D title exported (scaled to match the 200 mm model).');
-  } catch (e) { setStatus('Title export failed: ' + e.message, true); }
+// download menu on the 3D view
+document.querySelectorAll('#dlOptions button').forEach(b => {
+  b.addEventListener('click', () => {
+    const k = b.dataset.dl;
+    if (k === 'pdf') exportBasePdf();
+    else if (k === 'model') exportColour3MF();
+    else if (k === 'text') exportTitle3MF();
+  });
 });
