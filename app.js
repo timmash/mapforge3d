@@ -26,6 +26,7 @@ const state = {
   baseData: null,    // cached inputs for rebuilding the backing map: {bbox, elements, prebaked, M}
   placeLabels: null, // { suburb, postcode } for the backing-map title (best-effort)
   frame: null,       // THREE.Group of the decorative frame (preview only)
+  backdrop: null,    // THREE.Group of the backdrop wall/floor (preview only)
   titleObj: null,    // THREE.Mesh of the raised 3D title (preview + separate export)
   maxGround: 0,      // highest terrain elevation of the map, relative metres
 };
@@ -69,10 +70,11 @@ const cfg = {
   base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
   backing:    { on: true,  title: 'suburb', outline: 2, title3d: false },
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
+  backdrop:   { on: true,  style: 'white' },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
   minorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
-  paths:      { on: true,  color: '#55606f', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.3 },
+  paths:      { on: true,  color: '#c9d4e4', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.3 },
   green:      { on: true,  color: '#40653c', metal: 0.0,  rough: 1.0,  lift: 1.8 },
   water:      { on: true,  color: '#3d6fa8', metal: 0.25, rough: 0.35, lift: 1.6 },
 };
@@ -88,6 +90,17 @@ for (const key of Object.keys(cfg)) {
     side: THREE.DoubleSide,
   });
 }
+
+// reverse lookup: material → layer key (used to name/colour 3MF objects by layer)
+const MAT2KEY = new Map();
+for (const key of Object.keys(MATS)) MAT2KEY.set(MATS[key], key);
+
+// human-readable layer names for exported 3MF objects
+const LAYER_LABELS = {
+  buildings: 'Buildings', majorRoads: 'Major roads', minorRoads: 'Minor roads',
+  paths: 'Paths & tracks', green: 'Green space', water: 'Water',
+  terrain: 'Terrain', base: 'Base block',
+};
 
 const $ = (id) => document.getElementById(id);
 
@@ -1392,7 +1405,15 @@ function scheduleRebuild() {
 function layerChanged(key) {
   if (key === 'backing') { rebuildBaseLayer(); rebuildTitle3D(); }
   else if (key === 'frame') rebuildFrame();
+  else if (key === 'backdrop') rebuildBackdrop();
   else scheduleRebuild();
+}
+
+// A geometry-value change; the base depth also shifts the base sheet, frame,
+// backdrop and 3D title, so rebuild those too.
+function geomChanged(ck) {
+  scheduleRebuild();
+  if (ck === 'base') { rebuildBaseLayer(); rebuildFrame(); rebuildBackdrop(); rebuildTitle3D(); }
 }
 
 function statusLine(counts) {
@@ -1544,6 +1565,7 @@ async function generate() {
     state.baseData = { bbox, elements: baseElements, prebaked, M };
     rebuildBaseLayer();
     rebuildFrame();
+    rebuildBackdrop();
     rebuildTitle3D();
 
     const d = (state.mode === 'suburb' && state.council) ? 2 * Math.max(EXT.hx, EXT.hy) : state.sizeMeters;
@@ -1603,14 +1625,12 @@ const INSPECTOR = [
     ['color', 'Colour', 'color'],
     ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
   ]},
-  { key: 'terrain', label: 'Terrain elevation', toggle: true, items: [
+  { key: 'terrain', label: 'Terrain', toggle: true, items: [
     ['color', 'Colour', 'color'],
     ['exag', 'Vertical exaggeration', 'range', 0, 3, 0.05],
     ['res', 'Level of detail', 'range', 32, 160, 16],
-  ]},
-  { key: 'base', label: 'Base block', toggle: false, items: [
-    ['color', 'Colour', 'color'],
-    ['depth', 'Base depth (m)', 'range', 1, 100, 1],
+    ['color', 'Base colour', 'color', { ck: 'base' }],
+    ['depth', 'Base depth (m)', 'range', 1, 100, 1, { ck: 'base' }],
   ]},
   { key: 'backing', label: 'Backing map', toggle: true, items: [
     ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title']]],
@@ -1621,6 +1641,9 @@ const INSPECTOR = [
     ['material', 'Material', 'select', [['black', 'Black'], ['white', 'White'], ['silver', 'Silver'], ['wood', 'Wood texture']]],
     ['thickness', 'Thickness (mm)', 'range', 2, 40, 1],
     ['height', 'Height (mm)', 'range', 2, 40, 1],
+  ]},
+  { key: 'backdrop', label: 'Backdrop', toggle: true, items: [
+    ['style', 'Background', 'select', [['white', 'White wall'], ['brick', 'Brick wall'], ['wood', 'Wooden wall'], ['textured', 'Textured wall']]],
   ]},
 ];
 
@@ -1683,14 +1706,22 @@ function buildInspectorUI() {
     body.className = 'layer-body';
     body.style.display = 'none';
 
+    // accordion: opening one layer closes any other that's open
     head.addEventListener('click', () => {
       const open = body.style.display !== 'none';
-      body.style.display = open ? 'none' : 'block';
-      chev.textContent = open ? '▸' : '▾';
+      host.querySelectorAll('.layer-body').forEach(b => b.style.display = 'none');
+      host.querySelectorAll('.chev').forEach(ch => ch.textContent = '▸');
+      if (!open) { body.style.display = 'block'; chev.textContent = '▾'; }
     });
 
     for (const item of layer.items) {
       const [prop, label, kind] = item;
+      // an item can target a different config object via a trailing {ck:'base'} option
+      const last = item[item.length - 1];
+      const opts = (last && typeof last === 'object' && !Array.isArray(last)) ? last : null;
+      const ck = (opts && opts.ck) || layer.key;
+      const cc = cfg[ck];
+
       const row = document.createElement('div');
       row.className = 'ctl-row';
       const lab = document.createElement('label');
@@ -1700,22 +1731,22 @@ function buildInspectorUI() {
       if (kind === 'color') {
         const inp = document.createElement('input');
         inp.type = 'color';
-        inp.value = c[prop];
+        inp.value = cc[prop];
         inp.addEventListener('input', () => {
-          c[prop] = inp.value;
-          if (sw) sw.style.background = inp.value;
-          applyMaterial(layer.key);
+          cc[prop] = inp.value;
+          if (sw && ck === layer.key) sw.style.background = inp.value;
+          applyMaterial(ck);
         });
         row.appendChild(inp);
       } else if (kind === 'check') {
         const inp = document.createElement('input');
         inp.type = 'checkbox';
-        inp.checked = !!c[prop];
+        inp.checked = !!cc[prop];
         inp.style.accentColor = '#4f8cff';
         inp.style.width = '15px';
         inp.style.height = '15px';
         inp.style.cursor = 'pointer';
-        inp.addEventListener('change', () => { c[prop] = inp.checked; layerChanged(layer.key); });
+        inp.addEventListener('change', () => { cc[prop] = inp.checked; layerChanged(layer.key); });
         row.appendChild(inp);
       } else if (kind === 'select') {
         const sel = document.createElement('select');
@@ -1724,23 +1755,23 @@ function buildInspectorUI() {
           o.value = val; o.textContent = text;
           sel.appendChild(o);
         }
-        sel.value = c[prop];
-        sel.addEventListener('change', () => { c[prop] = sel.value; layerChanged(layer.key); });
+        sel.value = cc[prop];
+        sel.addEventListener('change', () => { cc[prop] = sel.value; layerChanged(layer.key); });
         row.appendChild(sel);
       } else { // range
         const [, , , min, max, step] = item;
         const inp = document.createElement('input');
         inp.type = 'range';
         inp.min = min; inp.max = max; inp.step = step;
-        inp.value = c[prop];
+        inp.value = cc[prop];
         const val = document.createElement('span');
         val.className = 'ctl-val';
-        val.textContent = c[prop];
+        val.textContent = cc[prop];
         inp.addEventListener('input', () => {
-          c[prop] = Number(inp.value);
+          cc[prop] = Number(inp.value);
           val.textContent = inp.value;
-          if (MATERIAL_KEYS.has(prop)) applyMaterial(layer.key);
-          else layerChanged(layer.key);
+          if (MATERIAL_KEYS.has(prop)) applyMaterial(ck);
+          else geomChanged(ck);
         });
         row.appendChild(inp);
         row.appendChild(val);
@@ -1754,6 +1785,8 @@ function buildInspectorUI() {
   }
 }
 buildInspectorUI();
+// warm up the title font so the flat + 3D titles are ready on first generate
+loadTitleFont().catch(() => {});
 
 /* ============================================================ base map layer */
 
@@ -1837,10 +1870,9 @@ function buildFlatMapCanvas(project, elements, extraBuildingPolys, M) {
   }
   ctx.fill('evenodd');
 
-  // Optional large title on the empty band above the 3D render, scaled so its
-  // width matches the width of the model footprint.
-  const titleText = backingTitleText();
-  if (titleText) drawBackingTitle(ctx, titleText, s, pxmm);
+  // Optional large greyscale title on the empty band above the 3D render, drawn
+  // from the SAME font as the 3D title so the two line up exactly.
+  drawBackingTitle(ctx, toPx, s, pxmm);
 
   return canvas;
 }
@@ -1860,38 +1892,66 @@ function backingTitleText() {
   return '';
 }
 
-// Draw the title centred over the model, its width matched to the model footprint
-// (2·EXT.hx metres wide), sitting in the empty band north of the model.
-function drawBackingTitle(ctx, text, s, pxmm) {
-  const modelWmm = 2 * EXT.hx * s;                       // model footprint width in mm
-  const targetWpx = modelWmm * pxmm;
-  const modelTopMM = MODEL_CY_MM - EXT.hy * s;           // north edge of the model, mm from top
-  const bandMM = Math.max(10, modelTopMM);               // empty band above the model
-  const yMM = modelTopMM - bandMM / 2;                   // centre of that band
-
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  ctx.miterLimit = 2;
-  // fit the font size so the rendered text is exactly the model's width
-  let fs = 100;
-  ctx.font = `700 ${fs}px "Segoe UI", system-ui, -apple-system, sans-serif`;
-  const w0 = ctx.measureText(text).width || 1;
-  fs = fs * targetWpx / w0;
-  // keep it from overflowing the band's height
-  fs = Math.min(fs, bandMM * 0.7 * pxmm);
-  ctx.font = `700 ${fs}px "Segoe UI", system-ui, -apple-system, sans-serif`;
-  const cx = MODEL_CX_MM * pxmm, cy = yMM * pxmm;
-  // white outline (adjustable) drawn behind the grey fill
-  const outlineMM = cfg.backing.outline || 0;
-  if (outlineMM > 0) {
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = outlineMM * pxmm;
-    ctx.strokeText(text, cx, cy);
+// Bounding box of a set of font shapes (outer contours).
+function shapesBounds(shapes) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const sh of shapes) {
+    for (const p of sh.getPoints(6)) {
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    }
   }
-  ctx.fillStyle = cfg.majorRoads.color;   // title matches the road colour
-  ctx.fillText(text, cx, cy);
+  return { minX, maxX, minY, maxY };
+}
+
+// Shared layout for BOTH the flat and 3D titles: same font glyphs, same size,
+// same centre — so the 3D title sits exactly over the printed one. Returns local
+// metres (origin = model centre, +y = north). Needs the title font loaded.
+function titleLayout(font) {
+  const text = backingTitleText();
+  if (!text || !font || !state.baseData) return null;
+  const M = state.baseData.M;
+  const metresPerMM = M / MODEL_PRINT_MM;
+  const W = 2 * EXT.hx;                                   // width = model footprint width
+  const sheetTopLocalY = MODEL_CY_MM * metresPerMM;       // north edge of the A3 sheet
+  const modelNorthLocalY = EXT.hy;                        // north edge of the model
+  const bandCentreY = (sheetTopLocalY + modelNorthLocalY) / 2;
+  const maxH = 0.7 * Math.max(1, sheetTopLocalY - modelNorthLocalY);
+  let probe;
+  try { probe = font.generateShapes(text, 100); } catch (e) { return null; }
+  const pb = shapesBounds(probe);
+  const w0 = (pb.maxX - pb.minX) || 1, h0 = (pb.maxY - pb.minY) || 1;
+  let size = 100 * W / w0;
+  if (h0 * size / 100 > maxH) size = 100 * maxH / h0;    // clamp so it fits the band
+  const shapes = font.generateShapes(text, size);
+  const b = shapesBounds(shapes);
+  return { text, size, shapes, cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2, bandCentreY };
+}
+
+// Draw the flat greyscale title (white outline + grey fill) from the font shapes.
+function drawBackingTitle(ctx, toPx, s, pxmm) {
+  const lay = titleLayout(_titleFont);
+  if (!lay) return;
+  const buildPath = () => {
+    ctx.beginPath();
+    for (const shape of lay.shapes) {
+      const ep = shape.extractPoints(6);
+      const contour = (pts) => {
+        pts.forEach((p, i) => {
+          const px = toPx([p.x - lay.cx, p.y - lay.cy + lay.bandCentreY]);
+          if (i === 0) ctx.moveTo(px[0], px[1]); else ctx.lineTo(px[0], px[1]);
+        });
+        ctx.closePath();
+      };
+      contour(ep.shape);
+      for (const h of ep.holes) contour(h);
+    }
+  };
+  ctx.save();
+  ctx.lineJoin = 'round';
+  const outlinePx = (cfg.backing.outline || 0) * pxmm;       // outline in mm → px
+  if (outlinePx > 0) { buildPath(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = outlinePx; ctx.stroke(); }
+  buildPath(); ctx.fillStyle = '#7a7a7a'; ctx.fill('evenodd');   // always greyscale
   ctx.restore();
 }
 
@@ -1940,10 +2000,12 @@ function removeBaseLayer() {
 }
 
 // (Re)build the backing map from cached inputs — used on first generate and
-// whenever the Backing map layer's toggle or title changes.
-function rebuildBaseLayer() {
+// whenever the Backing map layer's toggle or title changes. Async so the flat
+// title can use the same font as the 3D title (loaded on demand).
+async function rebuildBaseLayer() {
   removeBaseLayer();
   if (cfg.backing.on && state.baseData) {
+    if (backingTitleText()) { try { await loadTitleFont(); } catch (e) { /* draw without title */ } }
     const { bbox, elements, prebaked, M } = state.baseData;
     buildBaseLayer(bbox, elements, prebaked, M);
   }
@@ -2039,6 +2101,101 @@ function rebuildFrame() {
   if (cfg.frame.on && state.baseData) buildFrame(state.baseData.M);
 }
 
+/* ---------- backdrop wall + floor (preview only; never exported) ---------- */
+
+function brickTexture() {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#d7d2c8'; g.fillRect(0, 0, 256, 256);        // mortar
+  const bw = 60, bh = 26, m = 5;
+  let row = 0;
+  for (let y = 0; y < 256 + bh; y += bh + m) {
+    const off = (row % 2) ? -(bw + m) / 2 : 0;
+    for (let x = off; x < 256; x += bw + m) {
+      const shade = 150 + ((x * 7 + y * 13) % 40);
+      g.fillStyle = `rgb(${shade + 20},${Math.round(shade * 0.55)},${Math.round(shade * 0.42)})`;
+      g.fillRect(x, y, bw, bh);
+    }
+    row++;
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function plasterTexture() {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#dfe1e4'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 4000; i++) {
+    const x = (i * 61) % 256, y = (i * 173) % 256;
+    const d = 210 + ((x * 3 + y * 5) % 40);
+    g.fillStyle = `rgba(${d},${d},${d},0.5)`;
+    g.fillRect(x, y, 1.5, 1.5);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function backdropMaterial(style) {
+  if (style === 'brick') return new THREE.MeshStandardMaterial({ map: brickTexture(), roughness: 0.9, metalness: 0, side: THREE.DoubleSide });
+  if (style === 'wood') { const t = woodTexture(); t.wrapS = t.wrapT = THREE.RepeatWrapping; return new THREE.MeshStandardMaterial({ map: t, roughness: 0.7, metalness: 0, side: THREE.DoubleSide }); }
+  if (style === 'textured') return new THREE.MeshStandardMaterial({ map: plasterTexture(), roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
+  return new THREE.MeshStandardMaterial({ color: 0xf4f4f2, roughness: 0.95, metalness: 0, side: THREE.DoubleSide }); // white wall
+}
+
+function removeBackdrop() {
+  if (state.backdrop) {
+    scene.remove(state.backdrop);
+    state.backdrop.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+    });
+    state.backdrop = null;
+  }
+}
+
+function buildBackdrop(M) {
+  const mPerMM = M / MODEL_PRINT_MM;
+  const xHalf = (A3_W / 2) * mPerMM;
+  const zNorth = -MODEL_CY_MM * mPerMM;
+  const zSouth = (A3_H - MODEL_CY_MM) * mPerMM;
+  const frameT = (cfg.frame.on ? (cfg.frame.thickness || 10) : 0) * mPerMM;
+  const yb = -Math.max(0.5, cfg.base.depth) - 0.2;
+
+  const padX = xHalf * 0.9, padZ = (zSouth - zNorth) * 0.45;
+  const fx0 = -xHalf - frameT - padX, fx1 = xHalf + frameT + padX;
+  const fz0 = zNorth - frameT - padZ, fz1 = zSouth + frameT + padZ;
+  const floorW = fx1 - fx0, floorD = fz1 - fz0;
+  const wallH = (zSouth - zNorth) * 0.85;
+
+  const grp = new THREE.Group();
+  grp.name = 'backdrop';
+
+  // floor
+  const floorMat = backdropMaterial(cfg.backdrop.style);
+  if (floorMat.map) floorMat.map.repeat.set(Math.max(1, Math.round(floorW / xHalf)), Math.max(1, Math.round(floorD / xHalf)));
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(floorW, floorD), floorMat);
+  floor.geometry.rotateX(-Math.PI / 2);                  // lie flat, normal up
+  floor.geometry.translate((fx0 + fx1) / 2, yb - 0.5, (fz0 + fz1) / 2);
+
+  // back wall (north), standing vertically, facing south (+z)
+  const wallMat = backdropMaterial(cfg.backdrop.style);
+  if (wallMat.map) wallMat.map.repeat.set(Math.max(1, Math.round(floorW / xHalf)), Math.max(1, Math.round(wallH / xHalf)));
+  const wall = new THREE.Mesh(new THREE.PlaneGeometry(floorW, wallH), wallMat);
+  wall.geometry.translate((fx0 + fx1) / 2, yb + wallH / 2, fz0);
+
+  grp.add(floor); grp.add(wall);
+  state.backdrop = grp;
+  scene.add(grp);
+}
+
+function rebuildBackdrop() {
+  removeBackdrop();
+  if (cfg.backdrop.on && state.baseData) buildBackdrop(state.baseData.M);
+}
+
 /* ---------- 3D printable title (preview + separate export) ---------- */
 
 let _titleFont = null, _titleFontPromise = null;
@@ -2068,38 +2225,27 @@ function removeTitle3D() {
 // map's highest elevation. Added to the scene only (not state.model), so it is
 // excluded from the main 3D exports and printed base map — it has its own export.
 async function buildTitle3D() {
-  const text = backingTitleText();
-  if (!text || !state.baseData) return;
+  if (!state.baseData) return;
   let font;
   try { font = await loadTitleFont(); }
   catch (e) { console.warn('Title font failed to load', e); setStatus('Could not load the 3D title font.', true); return; }
   // guard against a stale rebuild (toggle flipped off while the font loaded)
   if (!cfg.backing.title3d || !cfg.backing.on) return;
 
-  const M = state.baseData.M;
-  const s = MODEL_PRINT_MM / M;          // mm per metre
-  const mPerMM = 1 / s;
+  // identical layout to the flat title → the 3D title sits exactly over it
+  const lay = titleLayout(font);
+  if (!lay) return;
   const depth = Math.max(state.maxGround || 0, 15);     // standing height = highest elevation
 
-  // size the glyphs so the word's width matches the model footprint width
-  const targetW = 2 * EXT.hx;
-  let geo = new TextGeometry(text, { font, size: 100, height: depth, curveSegments: 5, bevelEnabled: false });
-  geo.computeBoundingBox();
-  let w = geo.boundingBox.max.x - geo.boundingBox.min.x || 1;
-  const size = 100 * targetW / w;
-  geo.dispose();
-  geo = new TextGeometry(text, { font, size, height: depth, curveSegments: 5, bevelEnabled: false });
-
-  // orient upright: extrusion (+z) → world +y (up); letter faces read from above
+  let geo = new TextGeometry(lay.text, { font, size: lay.size, height: depth, curveSegments: 5, bevelEnabled: false });
+  // orient upright: extrusion → world +y (up); glyph tops point north; readable from above
   geo.rotateX(-Math.PI / 2);
   geo.computeBoundingBox();
   const bb = geo.boundingBox;
 
-  // place centred over the model (world x=0) in the title band north of the model
-  const modelTopMM = MODEL_CY_MM - EXT.hy * s;
-  const titleYmm = modelTopMM / 2;
-  const worldZ = (titleYmm - MODEL_CY_MM) * mPerMM;
-  const yb = -Math.max(0.5, cfg.base.depth) - 0.2;      // base level
+  // footprint centre → world (x=0, z=-bandCentreY); base sits on the base sheet
+  const worldZ = -lay.bandCentreY;                      // north = -z
+  const yb = -Math.max(0.5, cfg.base.depth) - 0.2;
   geo.translate(
     0 - (bb.min.x + bb.max.x) / 2,
     yb - bb.min.y,
@@ -2109,7 +2255,7 @@ async function buildTitle3D() {
 
   const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(cfg.majorRoads.color), roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.name = 'title3d';
+  mesh.name = 'Title';
   state.titleObj = mesh;
   scene.add(mesh);
 }
@@ -2146,15 +2292,18 @@ function writeColour3MF(root, filename) {
   const scale = 200 / modelMax;
   root.updateMatrixWorld(true);
 
-  // group all triangles by material colour (in world space)
+  // group all triangles by LAYER (so each layer becomes its own named, coloured
+  // object that Bambu Studio can map to a filament)
   const groups = new Map();
   const v = new THREE.Vector3();
   let minX = Infinity, maxX = -Infinity, minY = Infinity, minZ = Infinity, maxZ = -Infinity;
   root.traverse(o => {
     if (!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
     const col = (o.material && o.material.color) ? o.material.color.getHexString() : 'cccccc';
-    let g = groups.get(col);
-    if (!g) { g = { color: col, verts: [], tris: [] }; groups.set(col, g); }
+    const key = MAT2KEY.get(o.material) || ('colour_' + col);
+    const name = LAYER_LABELS[key] || o.name || key;
+    let g = groups.get(key);
+    if (!g) { g = { key, name, color: col, verts: [], tris: [] }; groups.set(key, g); }
     const pos = o.geometry.attributes.position, idx = o.geometry.index;
     const base = g.verts.length / 3;
     for (let i = 0; i < pos.count; i++) {
@@ -2174,8 +2323,9 @@ function writeColour3MF(root, filename) {
   // centre in X/Y and drop the base onto Z=0, then scale to mm.
   const mapV = (x, y, z) => [((x - midX) * scale), (-(z - midZ) * scale), ((y - minY) * scale)];
 
+  const esc = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const arr = [...groups.values()];
-  const matXml = arr.map((g, i) => `<base name="layer_${i}" displaycolor="#${g.color.toUpperCase()}FF"/>`).join('');
+  const matXml = arr.map((g) => `<base name="${esc(g.name)}" displaycolor="#${g.color.toUpperCase()}FF"/>`).join('');
   let objXml = '', itemXml = '';
   arr.forEach((g, i) => {
     const oid = i + 2;
@@ -2186,7 +2336,7 @@ function writeColour3MF(root, filename) {
     }
     const ts = [];
     for (let k = 0; k < g.tris.length; k += 3) ts.push(`<triangle v1="${g.tris[k]}" v2="${g.tris[k + 1]}" v3="${g.tris[k + 2]}"/>`);
-    objXml += `<object id="${oid}" type="model" pid="1" pindex="${i}"><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`;
+    objXml += `<object id="${oid}" name="${esc(g.name)}" type="model" pid="1" pindex="${i}"><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`;
     itemXml += `<item objectid="${oid}"/>`;
   });
 
