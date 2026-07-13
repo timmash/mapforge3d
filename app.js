@@ -1633,7 +1633,8 @@ async function generate() {
 
     showViewer(true);
     setStatus(statusLine(counts));
-    $('exportSection').style.display = 'block';
+    // Export section stays hidden — downloads are handled by the floating
+    // "Download" button on the 3D view.
   } catch (e) {
     console.error(e);
     setStatus('Generation failed: ' + (e.message || e) + ' — try a smaller area or wait a moment (the free OSM server rate-limits).', true);
@@ -2289,15 +2290,12 @@ function buildBackdrop(M) {
   const yb = -Math.max(0.5, cfg.base.depth) - 0.2;
 
   // Backdrop half-extent: the framed piece's padded footprint, widened out.
-  const frameH = (cfg.frame.on ? (cfg.frame.height || 10) : 0) * mPerMM;
   const paddedHalf = xHalf + frameT + xHalf * 0.9;
-  const halfW = paddedHalf * 8;                          // very wide backdrop (doubled)
+  const halfW = paddedHalf * 8;                          // very wide backdrop
   const padZ = (zSouth - zNorth) * 0.45;
   const fx0 = -halfW, fx1 = halfW;
   const fz0 = zNorth - frameT - padZ, fz1 = zSouth + frameT + padZ;
   const floorW = fx1 - fx0, floorD = fz1 - fz0;
-  const wallH = (zSouth - zNorth) * 1.8;                 // wall height doubled
-  const frameMidY = yb + frameH / 2;                     // centre the wall on the frame
   const floorY = yb - Math.max(2, (zSouth - zNorth) * 0.02);   // clearly below the sheet
   // world size of one texture tile; larger tile = fewer repeats = bigger pattern.
   // Brick is zoomed 16× (400% × 400%) and wood 4× relative to the base tile.
@@ -2307,20 +2305,14 @@ function buildBackdrop(M) {
   const grp = new THREE.Group();
   grp.name = 'backdrop';
 
-  // floor
+  // floor only — a single flat surface parallel to the backing map (no vertical wall)
   const floorMat = backdropMaterial(cfg.backdrop.style);
   if (floorMat.map) floorMat.map.repeat.set(Math.max(1, Math.round(floorW / tile)), Math.max(1, Math.round(floorD / tile)));
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(floorW, floorD), floorMat);
   floor.geometry.rotateX(-Math.PI / 2);                  // lie flat, normal up
   floor.geometry.translate((fx0 + fx1) / 2, floorY, (fz0 + fz1) / 2);
 
-  // back wall (north), standing vertically, facing south (+z)
-  const wallMat = backdropMaterial(cfg.backdrop.style);
-  if (wallMat.map) wallMat.map.repeat.set(Math.max(1, Math.round(floorW / tile)), Math.max(1, Math.round(wallH / tile)));
-  const wall = new THREE.Mesh(new THREE.PlaneGeometry(floorW, wallH), wallMat);
-  wall.geometry.translate((fx0 + fx1) / 2, frameMidY, fz0);   // equal height above & below the frame
-
-  grp.add(floor); grp.add(wall);
+  grp.add(floor);
   state.backdrop = grp;
   scene.add(grp);
 }
