@@ -2294,7 +2294,10 @@ function buildBackdrop(M) {
   const halfW = paddedHalf * 8;                          // very wide backdrop
   const padZ = (zSouth - zNorth) * 0.45;
   const fx0 = -halfW, fx1 = halfW;
-  const fz0 = zNorth - frameT - padZ, fz1 = zSouth + frameT + padZ;
+  // depth (the flat backdrop's on-screen "height") extended by 300% (×4 about its centre)
+  const bz0 = zNorth - frameT - padZ, bz1 = zSouth + frameT + padZ;
+  const midZ = (bz0 + bz1) / 2, halfD = (bz1 - bz0) / 2 * 4;
+  const fz0 = midZ - halfD, fz1 = midZ + halfD;
   const floorW = fx1 - fx0, floorD = fz1 - fz0;
   const floorY = yb - Math.max(2, (zSouth - zNorth) * 0.02);   // clearly below the sheet
   // world size of one texture tile; larger tile = fewer repeats = bigger pattern.
