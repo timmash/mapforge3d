@@ -335,7 +335,7 @@
 <body>
   <div id="sidebar">
     <header>
-      <h1>MapForge <span>3D</span><span class="ver">v1.032</span></h1>
+      <h1>MapForge <span>3D</span><span class="ver">v1.033</span></h1>
       <p>Turn any place on Earth into a 3D model — real buildings, terrain, roads and water from OpenStreetMap.</p>
     </header>
 
@@ -2198,11 +2198,8 @@ function buildInspectorUI() {
       sw.className = 'swatch';
       sw.style.background = c.color;
       head.appendChild(sw);
-    } else {
-      const spacer = document.createElement('span');
-      spacer.className = 'cb-spacer';
-      head.appendChild(spacer);
     }
+    // no colour → no swatch and no spacer, so the name isn't indented
 
     const name = document.createElement('span');
     name.className = 'layer-name';
