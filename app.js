@@ -1752,11 +1752,8 @@ function buildInspectorUI() {
       sw.className = 'swatch';
       sw.style.background = c.color;
       head.appendChild(sw);
-    } else {
-      const spacer = document.createElement('span');
-      spacer.className = 'cb-spacer';
-      head.appendChild(spacer);
     }
+    // no colour → no swatch and no spacer, so the name isn't indented
 
     const name = document.createElement('span');
     name.className = 'layer-name';
