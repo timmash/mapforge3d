@@ -335,7 +335,7 @@
 <body>
   <div id="sidebar">
     <header>
-      <h1>MapForge <span>3D</span><span class="ver">v1.026</span></h1>
+      <h1>MapForge <span>3D</span><span class="ver">v1.027</span></h1>
       <p>Turn any place on Earth into a 3D model — real buildings, terrain, roads and water from OpenStreetMap.</p>
     </header>
 
@@ -2543,41 +2543,46 @@ function boxBetween(x0, x1, y0, y1, z0, z1, mat) {
 }
 
 function woodTexture() {
-  const S = 512;
+  const S = 1024;
   const c = document.createElement('canvas'); c.width = S; c.height = S;
   const g = c.getContext('2d');
-  const planks = 4, pw = S / planks;
-  const tones = ['#8a5a30', '#7c4f2a', '#976a3c', '#835327'];
-  for (let p = 0; p < planks; p++) {
-    const x0 = p * pw;
-    // base plank colour with a soft cross-plank gradient
-    const grd = g.createLinearGradient(x0, 0, x0 + pw, 0);
-    grd.addColorStop(0, tones[p % tones.length]);
-    grd.addColorStop(0.5, tones[(p + 1) % tones.length]);
-    grd.addColorStop(1, tones[p % tones.length]);
-    g.fillStyle = grd; g.fillRect(x0, 0, pw, S);
-    // long grain lines running along the plank
-    for (let i = 0; i < 22; i++) {
-      const gx = x0 + ((i + 0.5) * (pw / 22)) + ((i * 17) % 6) - 3;
-      g.strokeStyle = `rgba(50,30,14,${0.12 + (i % 4) * 0.05})`;
-      g.lineWidth = 0.6 + (i % 3) * 0.6;
-      g.beginPath(); g.moveTo(gx, -10);
-      g.bezierCurveTo(gx + 7, S * 0.33, gx - 7, S * 0.66, gx + 4, S + 10);
+  const tones = [[142, 98, 58], [124, 84, 46], [158, 112, 68], [112, 74, 42], [148, 102, 60], [132, 90, 52]];
+  let x = 0, p = 0;
+  while (x < S) {
+    const pw = 150 + Math.random() * 90;                 // varied plank widths
+    const t = tones[p % tones.length];
+    const grd = g.createLinearGradient(x, 0, x + pw, 0);
+    grd.addColorStop(0, `rgb(${t[0] - 12},${t[1] - 9},${t[2] - 7})`);
+    grd.addColorStop(0.5, `rgb(${t[0]},${t[1]},${t[2]})`);
+    grd.addColorStop(1, `rgb(${t[0] - 10},${t[1] - 7},${t[2] - 5})`);
+    g.fillStyle = grd; g.fillRect(x, 0, pw, S);
+    // cathedral grain: nested arcs around a plank centre
+    const cx = x + pw * (0.3 + Math.random() * 0.4);
+    for (let i = 0; i < 46; i++) {
+      const off = (i - 23) * (pw / 46);
+      g.strokeStyle = `rgba(58,36,16,${0.08 + Math.random() * 0.13})`;
+      g.lineWidth = 0.6 + Math.random() * 1.4;
+      g.beginPath();
+      const gx = cx + off;
+      g.moveTo(gx, -20);
+      g.bezierCurveTo(cx + off * 0.55, S * 0.35, cx + off * 1.5, S * 0.66, gx + (Math.random() * 8 - 4), S + 20);
       g.stroke();
     }
-    // occasional knot
-    if ((p % 2) === 0) {
-      const ky = 90 + ((p * 137) % (S - 180));
-      const kx = x0 + pw * (0.4 + ((p * 0.13) % 0.3));
-      for (let r = 16; r > 0; r -= 3) {
-        g.strokeStyle = `rgba(45,26,10,${0.5 - r * 0.02})`; g.lineWidth = 1.5;
-        g.beginPath(); g.ellipse(kx, ky, r * 0.7, r, 0, 0, Math.PI * 2); g.stroke();
+    // knots
+    if (Math.random() < 0.5) {
+      const ky = Math.random() * S, kx = x + pw * (0.3 + Math.random() * 0.4);
+      for (let r = 26; r > 0; r -= 2.5) {
+        g.strokeStyle = `rgba(42,24,9,${0.55 - r * 0.014})`; g.lineWidth = 1.6;
+        g.beginPath(); g.ellipse(kx, ky, r * 0.6, r, Math.random() * 0.5, 0, Math.PI * 2); g.stroke();
       }
     }
-    // groove shadow + highlight between planks
-    g.fillStyle = 'rgba(0,0,0,0.30)'; g.fillRect(x0, 0, 2.5, S);
-    g.fillStyle = 'rgba(255,255,255,0.06)'; g.fillRect(x0 + 2.5, 0, 1.5, S);
+    // groove between planks (shadow + highlight)
+    g.fillStyle = 'rgba(0,0,0,0.30)'; g.fillRect(x, 0, 4, S);
+    g.fillStyle = 'rgba(255,236,208,0.06)'; g.fillRect(x + 4, 0, 2, S);
+    x += pw; p++;
   }
+  // faint overall fibre speckle
+  for (let i = 0; i < 20000; i++) { const sx = Math.random() * S, sy = Math.random() * S, a = Math.random() * 0.05; g.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${a})` : `rgba(255,240,215,${a})`; g.fillRect(sx, sy, 1.2, 1.2); }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   return tex;
@@ -2633,28 +2638,28 @@ function rebuildFrame() {
 /* ---------- backdrop wall + floor (preview only; never exported) ---------- */
 
 function brickTexture() {
-  const S = 512;
+  const S = 1024;
   const c = document.createElement('canvas'); c.width = S; c.height = S;
   const g = c.getContext('2d');
-  // mortar base with a little grain
-  g.fillStyle = '#c8c1b2'; g.fillRect(0, 0, S, S);
-  for (let i = 0; i < 6000; i++) { const x = (i * 71) % S, y = (i * 131) % S; g.fillStyle = `rgba(0,0,0,${0.03 + ((x + y) % 5) * 0.01})`; g.fillRect(x, y, 1, 1); }
-  const bw = 120, bh = 40, m = 9;    // brick + mortar gap
+  // mortar base — cementy grey with grain and soft shading
+  g.fillStyle = '#bcb4a4'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 16000; i++) { const x = Math.random() * S, y = Math.random() * S, a = Math.random() * 0.08; g.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`; g.fillRect(x, y, 1.5, 1.5); }
+  const bw = 210, bh = 74, m = 16;   // brick + mortar gap
+  const brickCols = [[152, 62, 48], [170, 74, 54], [134, 52, 42], [178, 88, 62], [120, 46, 40], [158, 68, 50], [110, 58, 52]];
   let row = 0;
   for (let y = -bh; y < S + bh; y += bh + m) {
     const off = (row % 2) ? -(bw + m) / 2 : 0;
     for (let x = off - bw; x < S + bw; x += bw + m) {
-      // per-brick colour variation (warm reds/browns)
-      const r = 150 + (((x * 13 + y * 7) % 55));
-      const gg = 60 + (((x * 5 + y * 11) % 28));
-      const b = 48 + (((x * 3 + y * 17) % 22));
-      g.fillStyle = `rgb(${Math.min(195, r)},${gg},${b})`;
-      g.fillRect(x, y, bw, bh);
+      const base = brickCols[Math.floor(Math.random() * brickCols.length)];
+      const jit = k => Math.max(0, Math.min(255, base[k] + (Math.random() * 34 - 17))) | 0;
+      const yy = y + (Math.random() * 3 - 1.5), hh = bh + (Math.random() * 3 - 1.5);
+      g.fillStyle = `rgb(${jit(0)},${jit(1)},${jit(2)})`;
+      g.fillRect(x, yy, bw, hh);
+      // mottling / weathering within the brick
+      for (let k = 0; k < 90; k++) { const sx = x + Math.random() * bw, sy = yy + Math.random() * hh, a = Math.random() * 0.14; g.fillStyle = Math.random() < 0.55 ? `rgba(0,0,0,${a})` : `rgba(255,236,214,${a * 0.7})`; g.fillRect(sx, sy, 3, 3); }
       // bevel: top/left highlight, bottom/right shadow
-      g.fillStyle = 'rgba(255,255,255,0.08)'; g.fillRect(x, y, bw, 3); g.fillRect(x, y, 3, bh);
-      g.fillStyle = 'rgba(0,0,0,0.16)'; g.fillRect(x, y + bh - 3, bw, 3); g.fillRect(x + bw - 3, y, 3, bh);
-      // speckle within the brick
-      for (let k = 0; k < 22; k++) { const sx = x + ((k * 29) % bw), sy = y + ((k * 19) % bh); g.fillStyle = `rgba(0,0,0,0.05)`; g.fillRect(sx, sy, 2, 2); }
+      g.fillStyle = 'rgba(255,238,222,0.10)'; g.fillRect(x, yy, bw, 4); g.fillRect(x, yy, 4, hh);
+      g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(x, yy + hh - 4, bw, 4); g.fillRect(x + bw - 4, yy, 4, hh);
     }
     row++;
   }
@@ -2663,16 +2668,35 @@ function brickTexture() {
   return tex;
 }
 
+// Rendered/troweled plaster wall: warm off-white with soft mottling, sweeping
+// trowel marks and a fine sand speckle.
 function plasterTexture() {
-  const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+  const S = 1024;
+  const c = document.createElement('canvas'); c.width = S; c.height = S;
   const g = c.getContext('2d');
-  g.fillStyle = '#dfe1e4'; g.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 4000; i++) {
-    const x = (i * 61) % 256, y = (i * 173) % 256;
-    const d = 210 + ((x * 3 + y * 5) % 40);
-    g.fillStyle = `rgba(${d},${d},${d},0.5)`;
-    g.fillRect(x, y, 1.5, 1.5);
+  g.fillStyle = '#e8e3d9'; g.fillRect(0, 0, S, S);       // warm render base
+  // soft mottled patches (light + shadow)
+  for (let i = 0; i < 130; i++) {
+    const x = Math.random() * S, y = Math.random() * S, r = 60 + Math.random() * 180;
+    const light = Math.random() < 0.5, a = 0.04 + Math.random() * 0.06;
+    const grd = g.createRadialGradient(x, y, 0, x, y, r);
+    grd.addColorStop(0, light ? `rgba(255,252,244,${a})` : `rgba(118,108,92,${a})`);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grd; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
   }
+  // trowel sweeps — long faint curved strokes
+  for (let i = 0; i < 70; i++) {
+    const x = Math.random() * S, y = Math.random() * S, len = 120 + Math.random() * 300;
+    const ang = (Math.random() * 0.7 - 0.35) + (Math.random() < 0.5 ? 0 : Math.PI / 2);
+    g.strokeStyle = Math.random() < 0.5 ? `rgba(255,255,250,0.05)` : `rgba(88,80,68,0.05)`;
+    g.lineWidth = 14 + Math.random() * 26; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(x, y);
+    g.quadraticCurveTo(x + Math.cos(ang) * len * 0.5 + (Math.random() * 40 - 20), y + Math.sin(ang) * len * 0.5,
+      x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    g.stroke();
+  }
+  // fine sand speckle
+  for (let i = 0; i < 26000; i++) { const x = Math.random() * S, y = Math.random() * S, a = Math.random() * 0.06; g.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`; g.fillRect(x, y, 1, 1); }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   return tex;
@@ -2716,8 +2740,10 @@ function buildBackdrop(M) {
   const floorW = fx1 - fx0, floorD = fz1 - fz0;
   const wallH = (zSouth - zNorth) * 0.9;
   const floorY = yb - Math.max(2, (zSouth - zNorth) * 0.02);   // clearly below the sheet
-  // world size of one texture tile; brick is zoomed in 400% (bricks 4× larger)
-  const tile = Math.max(xHalf * 0.5, 1) * (cfg.backdrop.style === 'brick' ? 4 : 1);
+  // world size of one texture tile; larger tile = fewer repeats = bigger pattern.
+  // Brick is zoomed 16× (400% × 400%) and wood 4× relative to the base tile.
+  const styleScale = ({ brick: 16, wood: 4 })[cfg.backdrop.style] || 1;
+  const tile = Math.max(xHalf * 0.5, 1) * styleScale;
 
   const grp = new THREE.Group();
   grp.name = 'backdrop';
