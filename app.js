@@ -68,7 +68,7 @@ const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
-  backing:    { on: true,  title: 'suburb', outline: 2, title3d: false },
+  backing:    { on: true,  title: 'suburb', outline: 2, title3d: true },
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
   backdrop:   { on: true,  style: 'brick' },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
@@ -1492,7 +1492,7 @@ function initViewer() {
   scene.background = new THREE.Color(0x0d1117);
   scene.fog = new THREE.Fog(0x0d1117, 2500, 6000);
 
-  camera = new THREE.PerspectiveCamera(50, el.clientWidth / el.clientHeight, 1, 20000);
+  camera = new THREE.PerspectiveCamera(50, el.clientWidth / el.clientHeight, 1, 60000);
 
   scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x30363d, 1.1));
   const sun = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -1529,6 +1529,7 @@ function showViewer(on) {
   $('map').style.display = on ? 'none' : 'block';
   $('backBtn').style.display = on ? 'block' : 'none';
   $('dlMenu').style.display = on ? 'block' : 'none';
+  if (on) updateDownloadMenu();
   if (on) { $('selBox').style.display = 'none'; resizeViewer(); }
   else { updateSelBox(); map.resize(); }
 }
@@ -1628,7 +1629,7 @@ async function generate() {
     controls.target.set(0, 0, 0);
     controls.update();
     scene.fog.near = d * 6;
-    scene.fog.far = d * 18;
+    scene.fog.far = d * 54;   // +200% draw distance so objects don't vanish when zoomed out
 
     showViewer(true);
     setStatus(statusLine(counts));
@@ -1658,15 +1659,13 @@ const INSPECTOR = [
     ['minH', 'Minimum height (m)', 'range', 0, 30, 1],
     ['fit', 'Ground fit', 'select', [['terrain', 'Follow terrain'], ['flat', 'Flat (lowest point)']]],
   ]},
-  { key: 'majorRoads', label: 'Major roads', toggle: true, items: [
-    ['color', 'Colour', 'color'],
-    ['widthScale', 'Width scale', 'range', 0.2, 3, 0.05],
-    ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
-  ]},
-  { key: 'minorRoads', label: 'Minor roads', toggle: true, items: [
-    ['color', 'Colour', 'color'],
-    ['widthScale', 'Width scale', 'range', 0.2, 3, 0.05],
-    ['lift', 'Raise above ground (m)', 'range', 0, 5, 0.1],
+  { key: 'majorRoads', label: 'Roads', toggle: true, toggleAlso: ['minorRoads'], items: [
+    ['color', 'Major colour', 'color'],
+    ['widthScale', 'Major width scale', 'range', 0.2, 3, 0.05],
+    ['lift', 'Major raise above ground (m)', 'range', 0, 5, 0.1],
+    ['color', 'Minor colour', 'color', { ck: 'minorRoads' }],
+    ['widthScale', 'Minor width scale', 'range', 0.2, 3, 0.05, { ck: 'minorRoads' }],
+    ['lift', 'Minor raise above ground (m)', 'range', 0, 5, 0.1, { ck: 'minorRoads' }],
   ]},
   { key: 'paths', label: 'Paths & tracks', toggle: true, items: [
     ['color', 'Colour', 'color'],
@@ -1734,7 +1733,11 @@ function buildInspectorUI() {
       cb.type = 'checkbox';
       cb.checked = c.on;
       cb.addEventListener('click', e => e.stopPropagation());
-      cb.addEventListener('change', () => { c.on = cb.checked; layerChanged(layer.key); });
+      cb.addEventListener('change', () => {
+        c.on = cb.checked;
+        for (const k of (layer.toggleAlso || [])) cfg[k].on = cb.checked;   // e.g. Roads toggles major + minor
+        layerChanged(layer.key);
+      });
       head.appendChild(cb);
     } else {
       const spacer = document.createElement('span');
@@ -2286,13 +2289,15 @@ function buildBackdrop(M) {
   const yb = -Math.max(0.5, cfg.base.depth) - 0.2;
 
   // Backdrop half-extent: the framed piece's padded footprint, widened out.
+  const frameH = (cfg.frame.on ? (cfg.frame.height || 10) : 0) * mPerMM;
   const paddedHalf = xHalf + frameT + xHalf * 0.9;
-  const halfW = paddedHalf * 4;                          // very wide backdrop
+  const halfW = paddedHalf * 8;                          // very wide backdrop (doubled)
   const padZ = (zSouth - zNorth) * 0.45;
   const fx0 = -halfW, fx1 = halfW;
   const fz0 = zNorth - frameT - padZ, fz1 = zSouth + frameT + padZ;
   const floorW = fx1 - fx0, floorD = fz1 - fz0;
-  const wallH = (zSouth - zNorth) * 0.9;
+  const wallH = (zSouth - zNorth) * 1.8;                 // wall height doubled
+  const frameMidY = yb + frameH / 2;                     // centre the wall on the frame
   const floorY = yb - Math.max(2, (zSouth - zNorth) * 0.02);   // clearly below the sheet
   // world size of one texture tile; larger tile = fewer repeats = bigger pattern.
   // Brick is zoomed 16× (400% × 400%) and wood 4× relative to the base tile.
@@ -2313,7 +2318,7 @@ function buildBackdrop(M) {
   const wallMat = backdropMaterial(cfg.backdrop.style);
   if (wallMat.map) wallMat.map.repeat.set(Math.max(1, Math.round(floorW / tile)), Math.max(1, Math.round(wallH / tile)));
   const wall = new THREE.Mesh(new THREE.PlaneGeometry(floorW, wallH), wallMat);
-  wall.geometry.translate((fx0 + fx1) / 2, floorY + wallH / 2, fz0);
+  wall.geometry.translate((fx0 + fx1) / 2, frameMidY, fz0);   // equal height above & below the frame
 
   grp.add(floor); grp.add(wall);
   state.backdrop = grp;
@@ -2399,6 +2404,7 @@ function updateTitleExportUI() {
   const on = !!(cfg.backing.on && cfg.backing.title3d);
   if ($('expTitle')) $('expTitle').style.display = on ? 'block' : 'none';
   if ($('titleHint')) $('titleHint').style.display = on ? 'block' : 'none';
+  if (typeof updateDownloadMenu === 'function') updateDownloadMenu();
 }
 
 /* ============================================================ export */
@@ -2568,3 +2574,10 @@ document.querySelectorAll('#dlOptions button').forEach(b => {
     else if (k === 'text') exportTitle3MF();
   });
 });
+
+// the "3D Text · 3MF" download option only makes sense when the 3D title is on
+function updateDownloadMenu() {
+  const t = document.querySelector('#dlOptions button[data-dl="text"]');
+  if (t) t.style.display = (cfg.backing.on && cfg.backing.title3d) ? 'block' : 'none';
+}
+updateDownloadMenu();
