@@ -70,7 +70,7 @@ const cfg = {
   base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
   backing:    { on: true,  title: 'suburb', outline: 2, title3d: false },
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
-  backdrop:   { on: true,  style: 'white' },
+  backdrop:   { on: true,  style: 'brick' },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
   majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
   minorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
@@ -109,6 +109,9 @@ const A3_W = 297, A3_H = 420;
 const MODEL_PRINT_MM = 200;             // model's widest side, printed
 const MODEL_CX_MM = A3_W / 2;           // 148.5 — model centred horizontally
 const MODEL_CY_MM = A3_H * 2 / 3;       // 280 — middle of the bottom two-thirds
+
+// title font cache — declared early so the startup preload can't hit a TDZ
+let _titleFont = null, _titleFontPromise = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -1695,7 +1698,7 @@ const INSPECTOR = [
     ['thickness', 'Thickness (mm)', 'range', 2, 40, 1],
     ['height', 'Height (mm)', 'range', 2, 40, 1],
   ]},
-  { key: 'backdrop', label: 'Backdrop', toggle: true, items: [
+  { key: 'backdrop', label: 'Environment', toggle: true, items: [
     ['style', 'Background', 'select', [['white', 'White wall'], ['brick', 'Brick wall'], ['wood', 'Wooden wall'], ['textured', 'Textured wall']]],
   ]},
 ];
@@ -2258,15 +2261,17 @@ function buildBackdrop(M) {
   const frameT = (cfg.frame.on ? (cfg.frame.thickness || 10) : 0) * mPerMM;
   const yb = -Math.max(0.5, cfg.base.depth) - 0.2;
 
-  // Backdrop is TWICE as wide as the framed piece's padded footprint.
-  const halfW = (xHalf + frameT) * 2 + xHalf * 0.9 * 2;   // doubled horizontal half-extent
+  // Backdrop half-extent: the framed piece's padded footprint, widened out.
+  const paddedHalf = xHalf + frameT + xHalf * 0.9;
+  const halfW = paddedHalf * 4;                          // very wide backdrop
   const padZ = (zSouth - zNorth) * 0.45;
   const fx0 = -halfW, fx1 = halfW;
   const fz0 = zNorth - frameT - padZ, fz1 = zSouth + frameT + padZ;
   const floorW = fx1 - fx0, floorD = fz1 - fz0;
   const wallH = (zSouth - zNorth) * 0.9;
   const floorY = yb - Math.max(2, (zSouth - zNorth) * 0.02);   // clearly below the sheet
-  const tile = Math.max(xHalf * 0.5, 1);                        // world size of one texture tile
+  // world size of one texture tile; brick is zoomed in 400% (bricks 4× larger)
+  const tile = Math.max(xHalf * 0.5, 1) * (cfg.backdrop.style === 'brick' ? 4 : 1);
 
   const grp = new THREE.Group();
   grp.name = 'backdrop';
@@ -2296,7 +2301,6 @@ function rebuildBackdrop() {
 
 /* ---------- 3D printable title (preview + separate export) ---------- */
 
-let _titleFont = null, _titleFontPromise = null;
 function loadTitleFont() {
   if (_titleFont) return Promise.resolve(_titleFont);
   if (!_titleFontPromise) {
