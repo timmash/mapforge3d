@@ -2233,27 +2233,37 @@ function plasterTexture() {
   const c = document.createElement('canvas'); c.width = S; c.height = S;
   const g = c.getContext('2d');
   g.fillStyle = '#e8e3d9'; g.fillRect(0, 0, S, S);       // warm render base
+  // draw a feature plus its 8 wrapped copies so anything crossing an edge
+  // reappears on the opposite side → the tile repeats seamlessly
+  const tiled = (fn) => { for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) fn(ox * S, oy * S); };
+
   // soft mottled patches (light + shadow)
-  for (let i = 0; i < 130; i++) {
+  for (let i = 0; i < 170; i++) {
     const x = Math.random() * S, y = Math.random() * S, r = 60 + Math.random() * 180;
     const light = Math.random() < 0.5, a = 0.04 + Math.random() * 0.06;
-    const grd = g.createRadialGradient(x, y, 0, x, y, r);
-    grd.addColorStop(0, light ? `rgba(255,252,244,${a})` : `rgba(118,108,92,${a})`);
-    grd.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = grd; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+    const col = light ? '255,252,244' : '118,108,92';
+    tiled((dx, dy) => {
+      const grd = g.createRadialGradient(x + dx, y + dy, 0, x + dx, y + dy, r);
+      grd.addColorStop(0, `rgba(${col},${a})`);
+      grd.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grd; g.beginPath(); g.arc(x + dx, y + dy, r, 0, Math.PI * 2); g.fill();
+    });
   }
   // trowel sweeps — long faint curved strokes
-  for (let i = 0; i < 70; i++) {
+  g.lineCap = 'round';
+  for (let i = 0; i < 90; i++) {
     const x = Math.random() * S, y = Math.random() * S, len = 120 + Math.random() * 300;
     const ang = (Math.random() * 0.7 - 0.35) + (Math.random() < 0.5 ? 0 : Math.PI / 2);
-    g.strokeStyle = Math.random() < 0.5 ? `rgba(255,255,250,0.05)` : `rgba(88,80,68,0.05)`;
-    g.lineWidth = 14 + Math.random() * 26; g.lineCap = 'round';
-    g.beginPath(); g.moveTo(x, y);
-    g.quadraticCurveTo(x + Math.cos(ang) * len * 0.5 + (Math.random() * 40 - 20), y + Math.sin(ang) * len * 0.5,
-      x + Math.cos(ang) * len, y + Math.sin(ang) * len);
-    g.stroke();
+    const mx = x + Math.cos(ang) * len * 0.5 + (Math.random() * 40 - 20), my = y + Math.sin(ang) * len * 0.5;
+    const ex = x + Math.cos(ang) * len, ey = y + Math.sin(ang) * len;
+    const style = Math.random() < 0.5 ? 'rgba(255,255,250,0.05)' : 'rgba(88,80,68,0.05)';
+    const lw = 14 + Math.random() * 26;
+    tiled((dx, dy) => {
+      g.strokeStyle = style; g.lineWidth = lw;
+      g.beginPath(); g.moveTo(x + dx, y + dy); g.quadraticCurveTo(mx + dx, my + dy, ex + dx, ey + dy); g.stroke();
+    });
   }
-  // fine sand speckle
+  // fine sand speckle (uniform high-frequency noise — already seamless)
   for (let i = 0; i < 26000; i++) { const x = Math.random() * S, y = Math.random() * S, a = Math.random() * 0.06; g.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`; g.fillRect(x, y, 1, 1); }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -2302,7 +2312,7 @@ function buildBackdrop(M) {
   const floorY = yb - Math.max(2, (zSouth - zNorth) * 0.02);   // clearly below the sheet
   // world size of one texture tile; larger tile = fewer repeats = bigger pattern.
   // Brick is zoomed 16× (400% × 400%) and wood 4× relative to the base tile.
-  const styleScale = ({ brick: 16, wood: 4 })[cfg.backdrop.style] || 1;
+  const styleScale = ({ brick: 16, wood: 4, textured: 12 })[cfg.backdrop.style] || 1;
   const tile = Math.max(xHalf * 0.5, 1) * styleScale;
 
   const grp = new THREE.Group();

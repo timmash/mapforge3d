@@ -335,7 +335,7 @@
 <body>
   <div id="sidebar">
     <header>
-      <h1>MapForge <span>3D</span><span class="ver">v1.028</span></h1>
+      <h1>MapForge <span>3D</span><span class="ver">v1.032</span></h1>
       <p>Turn any place on Earth into a 3D model — real buildings, terrain, roads and water from OpenStreetMap.</p>
     </header>
 
@@ -2079,7 +2079,8 @@ async function generate() {
 
     showViewer(true);
     setStatus(statusLine(counts));
-    $('exportSection').style.display = 'block';
+    // Export section stays hidden — downloads are handled by the floating
+    // "Download" button on the 3D view.
   } catch (e) {
     console.error(e);
     setStatus('Generation failed: ' + (e.message || e) + ' — try a smaller area or wait a moment (the free OSM server rate-limits).', true);
@@ -2678,27 +2679,37 @@ function plasterTexture() {
   const c = document.createElement('canvas'); c.width = S; c.height = S;
   const g = c.getContext('2d');
   g.fillStyle = '#e8e3d9'; g.fillRect(0, 0, S, S);       // warm render base
+  // draw a feature plus its 8 wrapped copies so anything crossing an edge
+  // reappears on the opposite side → the tile repeats seamlessly
+  const tiled = (fn) => { for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) fn(ox * S, oy * S); };
+
   // soft mottled patches (light + shadow)
-  for (let i = 0; i < 130; i++) {
+  for (let i = 0; i < 170; i++) {
     const x = Math.random() * S, y = Math.random() * S, r = 60 + Math.random() * 180;
     const light = Math.random() < 0.5, a = 0.04 + Math.random() * 0.06;
-    const grd = g.createRadialGradient(x, y, 0, x, y, r);
-    grd.addColorStop(0, light ? `rgba(255,252,244,${a})` : `rgba(118,108,92,${a})`);
-    grd.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = grd; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+    const col = light ? '255,252,244' : '118,108,92';
+    tiled((dx, dy) => {
+      const grd = g.createRadialGradient(x + dx, y + dy, 0, x + dx, y + dy, r);
+      grd.addColorStop(0, `rgba(${col},${a})`);
+      grd.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grd; g.beginPath(); g.arc(x + dx, y + dy, r, 0, Math.PI * 2); g.fill();
+    });
   }
   // trowel sweeps — long faint curved strokes
-  for (let i = 0; i < 70; i++) {
+  g.lineCap = 'round';
+  for (let i = 0; i < 90; i++) {
     const x = Math.random() * S, y = Math.random() * S, len = 120 + Math.random() * 300;
     const ang = (Math.random() * 0.7 - 0.35) + (Math.random() < 0.5 ? 0 : Math.PI / 2);
-    g.strokeStyle = Math.random() < 0.5 ? `rgba(255,255,250,0.05)` : `rgba(88,80,68,0.05)`;
-    g.lineWidth = 14 + Math.random() * 26; g.lineCap = 'round';
-    g.beginPath(); g.moveTo(x, y);
-    g.quadraticCurveTo(x + Math.cos(ang) * len * 0.5 + (Math.random() * 40 - 20), y + Math.sin(ang) * len * 0.5,
-      x + Math.cos(ang) * len, y + Math.sin(ang) * len);
-    g.stroke();
+    const mx = x + Math.cos(ang) * len * 0.5 + (Math.random() * 40 - 20), my = y + Math.sin(ang) * len * 0.5;
+    const ex = x + Math.cos(ang) * len, ey = y + Math.sin(ang) * len;
+    const style = Math.random() < 0.5 ? 'rgba(255,255,250,0.05)' : 'rgba(88,80,68,0.05)';
+    const lw = 14 + Math.random() * 26;
+    tiled((dx, dy) => {
+      g.strokeStyle = style; g.lineWidth = lw;
+      g.beginPath(); g.moveTo(x + dx, y + dy); g.quadraticCurveTo(mx + dx, my + dy, ex + dx, ey + dy); g.stroke();
+    });
   }
-  // fine sand speckle
+  // fine sand speckle (uniform high-frequency noise — already seamless)
   for (let i = 0; i < 26000; i++) { const x = Math.random() * S, y = Math.random() * S, a = Math.random() * 0.06; g.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`; g.fillRect(x, y, 1, 1); }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -2735,38 +2746,32 @@ function buildBackdrop(M) {
   const yb = -Math.max(0.5, cfg.base.depth) - 0.2;
 
   // Backdrop half-extent: the framed piece's padded footprint, widened out.
-  const frameH = (cfg.frame.on ? (cfg.frame.height || 10) : 0) * mPerMM;
   const paddedHalf = xHalf + frameT + xHalf * 0.9;
-  const halfW = paddedHalf * 8;                          // very wide backdrop (doubled)
+  const halfW = paddedHalf * 8;                          // very wide backdrop
   const padZ = (zSouth - zNorth) * 0.45;
   const fx0 = -halfW, fx1 = halfW;
-  const fz0 = zNorth - frameT - padZ, fz1 = zSouth + frameT + padZ;
+  // depth (the flat backdrop's on-screen "height") extended by 300% (×4 about its centre)
+  const bz0 = zNorth - frameT - padZ, bz1 = zSouth + frameT + padZ;
+  const midZ = (bz0 + bz1) / 2, halfD = (bz1 - bz0) / 2 * 4;
+  const fz0 = midZ - halfD, fz1 = midZ + halfD;
   const floorW = fx1 - fx0, floorD = fz1 - fz0;
-  const wallH = (zSouth - zNorth) * 1.8;                 // wall height doubled
-  const frameMidY = yb + frameH / 2;                     // centre the wall on the frame
   const floorY = yb - Math.max(2, (zSouth - zNorth) * 0.02);   // clearly below the sheet
   // world size of one texture tile; larger tile = fewer repeats = bigger pattern.
   // Brick is zoomed 16× (400% × 400%) and wood 4× relative to the base tile.
-  const styleScale = ({ brick: 16, wood: 4 })[cfg.backdrop.style] || 1;
+  const styleScale = ({ brick: 16, wood: 4, textured: 12 })[cfg.backdrop.style] || 1;
   const tile = Math.max(xHalf * 0.5, 1) * styleScale;
 
   const grp = new THREE.Group();
   grp.name = 'backdrop';
 
-  // floor
+  // floor only — a single flat surface parallel to the backing map (no vertical wall)
   const floorMat = backdropMaterial(cfg.backdrop.style);
   if (floorMat.map) floorMat.map.repeat.set(Math.max(1, Math.round(floorW / tile)), Math.max(1, Math.round(floorD / tile)));
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(floorW, floorD), floorMat);
   floor.geometry.rotateX(-Math.PI / 2);                  // lie flat, normal up
   floor.geometry.translate((fx0 + fx1) / 2, floorY, (fz0 + fz1) / 2);
 
-  // back wall (north), standing vertically, facing south (+z)
-  const wallMat = backdropMaterial(cfg.backdrop.style);
-  if (wallMat.map) wallMat.map.repeat.set(Math.max(1, Math.round(floorW / tile)), Math.max(1, Math.round(wallH / tile)));
-  const wall = new THREE.Mesh(new THREE.PlaneGeometry(floorW, wallH), wallMat);
-  wall.geometry.translate((fx0 + fx1) / 2, frameMidY, fz0);   // equal height above & below the frame
-
-  grp.add(floor); grp.add(wall);
+  grp.add(floor);
   state.backdrop = grp;
   scene.add(grp);
 }
