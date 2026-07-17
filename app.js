@@ -68,7 +68,7 @@ const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
-  backing:    { on: true,  title: 'suburb', outline: 2, title3d: true },
+  backing:    { on: true,  title: 'suburb', outline: 2, title3d: true, nodes: true },
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
   backdrop:   { on: true,  style: 'brick' },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
@@ -216,7 +216,7 @@ function clearArea() {
   state.council = null;
   clearAreaOutline();
   $('selBox').style.display = (state.uiMode === 'custom' && state.sizeMeters) ? 'block' : 'none';
-  const sel = $('councilSelect'); if (sel) sel.value = '';
+  const inp = $('councilSearch'); if (inp) inp.value = '';
 }
 
 // Show the Layers + Generate controls only once there's something to build:
@@ -226,42 +226,77 @@ function updateLayersVisibility() {
   $('layersSection').style.display = ready ? 'block' : 'none';
 }
 
+// Searchable suburb combobox: type to filter, click / arrow+Enter to choose.
 function initSuburbPicker() {
-  const sel = $('councilSelect');
-  for (const s of SUBURBS) {
-    const o = document.createElement('option');
-    o.value = s.slug; o.textContent = s.name;
-    sel.appendChild(o);
-  }
-  sel.addEventListener('change', async () => {
-    const slug = sel.value;
-    if (!slug) { clearArea(); if (state.uiMode === 'suburb') $('selBox').style.display = 'none'; else updateSelBox(); updateLayersVisibility(); return; }
-    const suburb = SUBURBS.find(s => s.slug === slug);
-    setStatus('');
-    setLoading(true, `Finding the ${suburb.name} boundary…`);
-    try {
-      const b = await fetchSuburbBoundary(suburb.name);
-      // sanity guard: reject an unexpectedly huge match
-      const wkm = (b.bbox.east - b.bbox.west) * 111.32 * Math.cos(b.bbox.lat0 * Math.PI / 180);
-      const hkm = (b.bbox.north - b.bbox.south) * 111.32;
-      if (Math.max(wkm, hkm) > MAX_SPAN_KM) throw new Error(`matched area is too large (${Math.max(wkm, hkm).toFixed(1)} km across)`);
-      state.council = { name: suburb.name, slug: suburb.slug, bbox: b.bbox, maskRings: b.maskRings, postcode: b.postcode };
-      state.mode = 'suburb';
-      state.modelName = suburb.slug;
-      updateLayersVisibility();
-      drawAreaOutline(b.ll);
-      $('selBox').style.display = 'none';
-      map.fitBounds([[b.bbox.west, b.bbox.south], [b.bbox.east, b.bbox.north]], { padding: 40, duration: 800 });
-    } catch (e) {
-      setStatus('Could not load that suburb boundary: ' + (e.message || e), true);
-      clearArea();
-      updateLayersVisibility();
-    } finally {
-      setLoading(false);
+  const input = $('councilSearch');
+  const list = $('councilList');
+  let current = [], active = -1;
+
+  const render = () => {
+    const f = input.value.trim().toLowerCase();
+    current = f ? SUBURBS.filter(s => s.name.toLowerCase().includes(f)) : SUBURBS.slice();
+    active = -1;
+    list.innerHTML = '';
+    if (!current.length) {
+      const e = document.createElement('div'); e.className = 'combo-empty'; e.textContent = 'No matching suburb.';
+      list.appendChild(e); return;
     }
+    current.slice(0, 300).forEach((s) => {
+      const o = document.createElement('div');
+      o.className = 'combo-opt'; o.textContent = s.name;
+      o.addEventListener('mousedown', ev => { ev.preventDefault(); pick(s); });
+      list.appendChild(o);
+    });
+  };
+  const openList = () => { render(); list.classList.add('open'); };
+  const closeList = () => { list.classList.remove('open'); active = -1; };
+  const setActive = (i) => {
+    const opts = list.querySelectorAll('.combo-opt');
+    if (!opts.length) return;
+    active = (i + opts.length) % opts.length;
+    opts.forEach(o => o.classList.remove('active'));
+    opts[active].classList.add('active');
+    opts[active].scrollIntoView({ block: 'nearest' });
+  };
+  function pick(suburb) { input.value = suburb.name; closeList(); loadSuburb(suburb); }
+
+  input.addEventListener('focus', openList);
+  input.addEventListener('input', openList);
+  input.addEventListener('blur', () => setTimeout(closeList, 150));   // let a click land first
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!list.classList.contains('open')) openList(); setActive(active + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active - 1); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (active >= 0 && current[active]) pick(current[active]); else if (current.length === 1) pick(current[0]); }
+    else if (e.key === 'Escape') { closeList(); input.blur(); }
   });
 }
 initSuburbPicker();
+
+// Load a suburb's boundary and switch into suburb mode.
+async function loadSuburb(suburb) {
+  setStatus('');
+  setLoading(true, `Finding the ${suburb.name} boundary…`);
+  try {
+    const b = await fetchSuburbBoundary(suburb.name);
+    // sanity guard: reject an unexpectedly huge match
+    const wkm = (b.bbox.east - b.bbox.west) * 111.32 * Math.cos(b.bbox.lat0 * Math.PI / 180);
+    const hkm = (b.bbox.north - b.bbox.south) * 111.32;
+    if (Math.max(wkm, hkm) > MAX_SPAN_KM) throw new Error(`matched area is too large (${Math.max(wkm, hkm).toFixed(1)} km across)`);
+    state.council = { name: suburb.name, slug: suburb.slug, bbox: b.bbox, maskRings: b.maskRings, postcode: b.postcode };
+    state.mode = 'suburb';
+    state.modelName = suburb.slug;
+    updateLayersVisibility();
+    drawAreaOutline(b.ll);
+    $('selBox').style.display = 'none';
+    map.fitBounds([[b.bbox.west, b.bbox.south], [b.bbox.east, b.bbox.north]], { padding: 40, duration: 800 });
+  } catch (e) {
+    setStatus('Could not load that suburb boundary: ' + (e.message || e), true);
+    clearArea();
+    updateLayersVisibility();
+  } finally {
+    setLoading(false);
+  }
+}
 
 /* ---------- mode toggle (Suburb / Custom) ---------- */
 
@@ -1691,6 +1726,7 @@ const INSPECTOR = [
   { key: 'backing', label: 'Backing map', toggle: true, group: 'Printable map', items: [
     ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title']]],
     ['title3d', '3D printable title', 'check'],
+    ['nodes', 'Unmapped buildings (address nodes)', 'check'],
     ['outline', 'White outline (mm)', 'range', 0, 20, 0.5],
   ]},
   { key: 'frame', label: 'Frame', toggle: true, group: 'Other', items: [
@@ -1925,6 +1961,31 @@ function buildFlatMapCanvas(project, elements, extraBuildingPolys, M) {
     for (const h of poly.holes || []) ringPath(ringFromGeometry(h, project));
   }
   ctx.fill('evenodd');
+
+  // Unmapped buildings: a square at each address/building node that has no drawn
+  // footprint — same technique as the 3D boxes, matched to their size.
+  if (cfg.backing.nodes) {
+    const footprints = [];
+    for (const poly of collectPolygons(elements, t => t['building'] !== undefined)) footprints.push(ringFromGeometry(poly.outer, project));
+    if (extraBuildingPolys) for (const poly of extraBuildingPolys) footprints.push(ringFromGeometry(poly.outer, project));
+    const size = cfg.buildings.nodeSize, half = size / 2, cell = Math.max(2, size * 0.8);
+    const seen = new Set();
+    ctx.fillStyle = '#9a9a9a';
+    for (const el of elements) {
+      if (el.type !== 'node' || !el.tags) continue;
+      if (el.tags['addr:housenumber'] === undefined && el.tags['building'] === undefined) continue;
+      if (el.lat === undefined || el.lon === undefined) continue;
+      const [x, y] = project(el.lat, el.lon);
+      let covered = false;
+      for (const ring of footprints) { if (pointInRing(x, y, ring)) { covered = true; break; } }
+      if (covered) continue;
+      const key = Math.round(x / cell) + ':' + Math.round(y / cell);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const a = toPx([x - half, y - half]), b = toPx([x + half, y + half]);
+      ctx.fillRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+    }
+  }
 
   // Optional large greyscale title on the empty band above the 3D render, drawn
   // from the SAME font as the 3D title so the two line up exactly. Never let a
