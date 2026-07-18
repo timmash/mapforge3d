@@ -68,7 +68,7 @@ const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
-  backing:    { on: true,  title: 'suburb', outline: 2, title3d: true },
+  backing:    { on: true,  title: 'suburb', outline: 2, title3d: true, nodes: true },
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
   backdrop:   { on: true,  style: 'brick' },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
@@ -216,7 +216,7 @@ function clearArea() {
   state.council = null;
   clearAreaOutline();
   $('selBox').style.display = (state.uiMode === 'custom' && state.sizeMeters) ? 'block' : 'none';
-  const sel = $('councilSelect'); if (sel) sel.value = '';
+  const inp = $('councilSearch'); if (inp) inp.value = '';
 }
 
 // Show the Layers + Generate controls only once there's something to build:
@@ -226,42 +226,77 @@ function updateLayersVisibility() {
   $('layersSection').style.display = ready ? 'block' : 'none';
 }
 
+// Searchable suburb combobox: type to filter, click / arrow+Enter to choose.
 function initSuburbPicker() {
-  const sel = $('councilSelect');
-  for (const s of SUBURBS) {
-    const o = document.createElement('option');
-    o.value = s.slug; o.textContent = s.name;
-    sel.appendChild(o);
-  }
-  sel.addEventListener('change', async () => {
-    const slug = sel.value;
-    if (!slug) { clearArea(); if (state.uiMode === 'suburb') $('selBox').style.display = 'none'; else updateSelBox(); updateLayersVisibility(); return; }
-    const suburb = SUBURBS.find(s => s.slug === slug);
-    setStatus('');
-    setLoading(true, `Finding the ${suburb.name} boundary…`);
-    try {
-      const b = await fetchSuburbBoundary(suburb.name);
-      // sanity guard: reject an unexpectedly huge match
-      const wkm = (b.bbox.east - b.bbox.west) * 111.32 * Math.cos(b.bbox.lat0 * Math.PI / 180);
-      const hkm = (b.bbox.north - b.bbox.south) * 111.32;
-      if (Math.max(wkm, hkm) > MAX_SPAN_KM) throw new Error(`matched area is too large (${Math.max(wkm, hkm).toFixed(1)} km across)`);
-      state.council = { name: suburb.name, slug: suburb.slug, bbox: b.bbox, maskRings: b.maskRings, postcode: b.postcode };
-      state.mode = 'suburb';
-      state.modelName = suburb.slug;
-      updateLayersVisibility();
-      drawAreaOutline(b.ll);
-      $('selBox').style.display = 'none';
-      map.fitBounds([[b.bbox.west, b.bbox.south], [b.bbox.east, b.bbox.north]], { padding: 40, duration: 800 });
-    } catch (e) {
-      setStatus('Could not load that suburb boundary: ' + (e.message || e), true);
-      clearArea();
-      updateLayersVisibility();
-    } finally {
-      setLoading(false);
+  const input = $('councilSearch');
+  const list = $('councilList');
+  let current = [], active = -1;
+
+  const render = () => {
+    const f = input.value.trim().toLowerCase();
+    current = f ? SUBURBS.filter(s => s.name.toLowerCase().includes(f)) : SUBURBS.slice();
+    active = -1;
+    list.innerHTML = '';
+    if (!current.length) {
+      const e = document.createElement('div'); e.className = 'combo-empty'; e.textContent = 'No matching suburb.';
+      list.appendChild(e); return;
     }
+    current.slice(0, 300).forEach((s) => {
+      const o = document.createElement('div');
+      o.className = 'combo-opt'; o.textContent = s.name;
+      o.addEventListener('mousedown', ev => { ev.preventDefault(); pick(s); });
+      list.appendChild(o);
+    });
+  };
+  const openList = () => { render(); list.classList.add('open'); };
+  const closeList = () => { list.classList.remove('open'); active = -1; };
+  const setActive = (i) => {
+    const opts = list.querySelectorAll('.combo-opt');
+    if (!opts.length) return;
+    active = (i + opts.length) % opts.length;
+    opts.forEach(o => o.classList.remove('active'));
+    opts[active].classList.add('active');
+    opts[active].scrollIntoView({ block: 'nearest' });
+  };
+  function pick(suburb) { input.value = suburb.name; closeList(); loadSuburb(suburb); }
+
+  input.addEventListener('focus', openList);
+  input.addEventListener('input', openList);
+  input.addEventListener('blur', () => setTimeout(closeList, 150));   // let a click land first
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!list.classList.contains('open')) openList(); setActive(active + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active - 1); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (active >= 0 && current[active]) pick(current[active]); else if (current.length === 1) pick(current[0]); }
+    else if (e.key === 'Escape') { closeList(); input.blur(); }
   });
 }
 initSuburbPicker();
+
+// Load a suburb's boundary and switch into suburb mode.
+async function loadSuburb(suburb) {
+  setStatus('');
+  setLoading(true, `Finding the ${suburb.name} boundary…`);
+  try {
+    const b = await fetchSuburbBoundary(suburb.name);
+    // sanity guard: reject an unexpectedly huge match
+    const wkm = (b.bbox.east - b.bbox.west) * 111.32 * Math.cos(b.bbox.lat0 * Math.PI / 180);
+    const hkm = (b.bbox.north - b.bbox.south) * 111.32;
+    if (Math.max(wkm, hkm) > MAX_SPAN_KM) throw new Error(`matched area is too large (${Math.max(wkm, hkm).toFixed(1)} km across)`);
+    state.council = { name: suburb.name, slug: suburb.slug, bbox: b.bbox, maskRings: b.maskRings, postcode: b.postcode };
+    state.mode = 'suburb';
+    state.modelName = suburb.slug;
+    updateLayersVisibility();
+    drawAreaOutline(b.ll);
+    $('selBox').style.display = 'none';
+    map.fitBounds([[b.bbox.west, b.bbox.south], [b.bbox.east, b.bbox.north]], { padding: 40, duration: 800 });
+  } catch (e) {
+    setStatus('Could not load that suburb boundary: ' + (e.message || e), true);
+    clearArea();
+    updateLayersVisibility();
+  } finally {
+    setLoading(false);
+  }
+}
 
 /* ---------- mode toggle (Suburb / Custom) ---------- */
 
@@ -928,6 +963,40 @@ function clippedRings(poly, project) {
 
 /* ---------- terrain block (closed solid: displaced top, skirt, bottom) */
 
+// Build a WATERTIGHT closed solid from a 2D triangulation: a draped top surface,
+// a matching bottom surface, and side walls on the boundary edges — all sharing
+// one vertex set, so there are no unwelded seams or T-junctions (no open edges).
+// topY/botY are functions (x, y) → height.
+function closedDrapedSolid(verts, tris, topY, botY) {
+  const n = verts.length;
+  const positions = [], indices = [];
+  for (const [x, y] of verts) positions.push(x, topY(x, y), -y);   // 0 .. n-1   top
+  for (const [x, y] of verts) positions.push(x, botY(x, y), -y);   // n .. 2n-1  bottom
+  for (let t = 0; t < tris.length; t += 3) indices.push(tris[t], tris[t + 1], tris[t + 2]);
+  for (let t = 0; t < tris.length; t += 3) indices.push(n + tris[t + 2], n + tris[t + 1], n + tris[t]);
+  // side walls on the boundary edges (edges used by exactly one triangle)
+  const cnt = new Map(), dir = new Map();
+  const key = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
+  for (let t = 0; t < tris.length; t += 3) {
+    const tri = [tris[t], tris[t + 1], tris[t + 2]];
+    for (let e = 0; e < 3; e++) {
+      const a = tri[e], b = tri[(e + 1) % 3], k = key(a, b);
+      cnt.set(k, (cnt.get(k) || 0) + 1);
+      if (!dir.has(k)) dir.set(k, [a, b]);
+    }
+  }
+  for (const [k, c] of cnt) {
+    if (c !== 1) continue;
+    const [a, b] = dir.get(k);
+    indices.push(a, b, n + a,  b, n + b, n + a);   // wall quad reuses existing verts
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function buildTerrainBlock(groundAt) {
   if (EXT.mask) return buildCouncilTerrain(groundAt);
 
@@ -1312,33 +1381,9 @@ function buildFlatPolys(elements, project, groundAt, layerKey, match) {
       const verts = [];
       for (let i = 0; i < pos.count; i++) verts.push([pos.getX(i), pos.getY(i)]);
       const tris = subdivideTriangulation(verts, Array.from(rawIdx), 15);
-      const n = verts.length;
-      const positions = [], indices = [];
-      for (const [x, y] of verts) positions.push(x, groundAt(x, y) + c.lift, -y);  // draped top
-      for (const [x, y] of verts) positions.push(x, groundAt(x, y) - DEPTH, -y);   // draped underside
-      for (let t = 0; t < tris.length; t += 3) indices.push(tris[t], tris[t + 1], tris[t + 2]);
-      for (let t = 0; t < tris.length; t += 3) indices.push(n + tris[t + 2], n + tris[t + 1], n + tris[t]);
-      // side walls around the outer ring and every hole
-      const addWalls = (ring) => {
-        const base = positions.length / 3;
-        for (const [x, y] of ring) {
-          const g = groundAt(x, y);
-          positions.push(x, g + c.lift, -y);
-          positions.push(x, g - DEPTH, -y);
-        }
-        const m = ring.length;
-        for (let k = 0; k < m; k++) {
-          const a = base + k * 2, b = a + 1, cc = base + ((k + 1) % m) * 2, d = cc + 1;
-          indices.push(a, b, cc, b, d, cc);
-        }
-      };
-      addWalls(outer);
-      for (const h of holes) addWalls(h);
-
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      geo.setIndex(indices);
-      geo.computeVertexNormals();
+      // one watertight draped slab (top + underside + boundary walls, shared verts)
+      const geo = closedDrapedSolid(verts, tris,
+        (x, y) => groundAt(x, y) + c.lift, (x, y) => groundAt(x, y) - DEPTH);
       group.add(new THREE.Mesh(geo, MATS[layerKey]));
     } catch (e) { /* skip */ }
    }
@@ -1691,6 +1736,7 @@ const INSPECTOR = [
   { key: 'backing', label: 'Backing map', toggle: true, group: 'Printable map', items: [
     ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title']]],
     ['title3d', '3D printable title', 'check'],
+    ['nodes', 'Unmapped buildings (address nodes)', 'check'],
     ['outline', 'White outline (mm)', 'range', 0, 20, 0.5],
   ]},
   { key: 'frame', label: 'Frame', toggle: true, group: 'Other', items: [
@@ -1925,6 +1971,31 @@ function buildFlatMapCanvas(project, elements, extraBuildingPolys, M) {
     for (const h of poly.holes || []) ringPath(ringFromGeometry(h, project));
   }
   ctx.fill('evenodd');
+
+  // Unmapped buildings: a square at each address/building node that has no drawn
+  // footprint — same technique as the 3D boxes, matched to their size.
+  if (cfg.backing.nodes) {
+    const footprints = [];
+    for (const poly of collectPolygons(elements, t => t['building'] !== undefined)) footprints.push(ringFromGeometry(poly.outer, project));
+    if (extraBuildingPolys) for (const poly of extraBuildingPolys) footprints.push(ringFromGeometry(poly.outer, project));
+    const size = cfg.buildings.nodeSize, half = size / 2, cell = Math.max(2, size * 0.8);
+    const seen = new Set();
+    ctx.fillStyle = '#9a9a9a';
+    for (const el of elements) {
+      if (el.type !== 'node' || !el.tags) continue;
+      if (el.tags['addr:housenumber'] === undefined && el.tags['building'] === undefined) continue;
+      if (el.lat === undefined || el.lon === undefined) continue;
+      const [x, y] = project(el.lat, el.lon);
+      let covered = false;
+      for (const ring of footprints) { if (pointInRing(x, y, ring)) { covered = true; break; } }
+      if (covered) continue;
+      const key = Math.round(x / cell) + ':' + Math.round(y / cell);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const a = toPx([x - half, y - half]), b = toPx([x + half, y + half]);
+      ctx.fillRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+    }
+  }
 
   // Optional large greyscale title on the empty band above the 3D render, drawn
   // from the SAME font as the 3D title so the two line up exactly. Never let a

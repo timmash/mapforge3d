@@ -146,11 +146,19 @@
   }
   .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
   .council-label { display: block; margin: 12px 0 6px; font-size: 12px; color: var(--muted); }
-  #councilSelect {
-    width: 100%; background: var(--panel2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; font-size: 13px;
+  /* searchable suburb combobox */
+  .combo { position: relative; }
+  #councilSearch { width: 100%; }
+  .combo-list {
+    display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 40;
+    max-height: 240px; overflow-y: auto;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   }
-  #councilSelect:focus { border-color: var(--accent); outline: none; }
+  .combo-list.open { display: block; }
+  .combo-opt { padding: 8px 11px; font-size: 13px; color: var(--text); cursor: pointer; }
+  .combo-opt:hover, .combo-opt.active { background: var(--accent); color: #fff; }
+  .combo-empty { padding: 8px 11px; font-size: 12px; color: var(--muted); }
   /* ---------- layer inspector ---------- */
   .layer-group {
     font-size: 10px;
@@ -335,7 +343,7 @@
 <body>
   <div id="sidebar">
     <header>
-      <h1>MapForge <span>3D</span><span class="ver">v1.033</span></h1>
+      <h1>MapForge <span>3D</span><span class="ver">v1.036</span></h1>
       <p>Turn any place on Earth into a 3D model — real buildings, terrain, roads and water from OpenStreetMap.</p>
     </header>
 
@@ -352,9 +360,10 @@
         <span class="info">i</span>
         <span class="info-pop">Builds the whole suburb to its real boundary. Real footprints load automatically if you've added <code>buildings/&lt;suburb&gt;.buildings.json</code>.</span>
       </h2>
-      <select id="councilSelect">
-        <option value="">— choose a suburb —</option>
-      </select>
+      <div class="combo" id="suburbCombo">
+        <input type="text" id="councilSearch" placeholder="Search a suburb…" autocomplete="off">
+        <div class="combo-list" id="councilList"></div>
+      </div>
     </div>
 
     <div class="section" id="customPanel" style="display:none">
