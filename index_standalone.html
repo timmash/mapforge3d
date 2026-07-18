@@ -343,7 +343,7 @@
 <body>
   <div id="sidebar">
     <header>
-      <h1>MapForge <span>3D</span><span class="ver">v1.035</span></h1>
+      <h1>MapForge <span>3D</span><span class="ver">v1.036</span></h1>
       <p>Turn any place on Earth into a 3D model — real buildings, terrain, roads and water from OpenStreetMap.</p>
     </header>
 
@@ -464,7 +464,6 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
-import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import polygonClipping from 'https://esm.sh/polygon-clipping@0.15.7';
 import { jsPDF } from 'https://esm.sh/jspdf@2.5.1';
 import { zipSync, strToU8 } from 'https://esm.sh/fflate@0.8.2';
@@ -1453,40 +1452,74 @@ function closedDrapedSolid(verts, tris, topY, botY) {
   return geo;
 }
 
-// crust thickness of the terrain-colour cap over the base block, in metres,
-// scaled so it stays a printable layer once the model is shrunk to 200 mm.
-function terrainCrust() {
-  return Math.min(20, Math.max(1.5, Math.max(EXT.hx, EXT.hy) * 2 / 300));
-}
-
 function buildTerrainBlock(groundAt) {
   if (EXT.mask) return buildCouncilTerrain(groundAt);
 
   const hx = EXT.hx, hy = EXT.hy;
   const N = Math.max(16, Math.round(cfg.terrain.res / 16) * 16);
   const stepX = (2 * hx) / N, stepY = (2 * hy) / N;
-  const bot = -Math.max(0.5, cfg.base.depth);
-  const eps = terrainCrust();
 
-  // grid of 2D vertices + triangulation (shared by both stacked solids)
-  const verts = [], tris = [];
-  const V = (i, j) => j * (N + 1) + i;
-  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) verts.push([-hx + i * stepX, -hy + j * stepY]);
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const a = V(i, j), b = V(i + 1, j), c = V(i + 1, j + 1), d = V(i, j + 1);
-    tris.push(a, b, c, a, c, d);
+  const hz = [];
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i <= N; i++) {
+      hz.push(groundAt(-hx + i * stepX, -hy + j * stepY));
+    }
   }
-  const surf = (x, y) => groundAt(x, y);
 
-  // BASE BLOCK: closed solid, surface-shaped top → flat bottom (base colour)
-  const base = new THREE.Mesh(closedDrapedSolid(verts, tris, surf, () => bot), MATS.base);
-  base.name = 'base';
-  // TERRAIN CAP: thin closed slab hugging the surface (terrain colour), sits on the base
-  const terrain = new THREE.Mesh(closedDrapedSolid(verts, tris, (x, y) => surf(x, y) + eps, surf), MATS.terrain);
-  terrain.name = 'terrain';
+  const positions = [], indices = [];
+  const V = (i, j) => j * (N + 1) + i;
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i <= N; i++) {
+      const x = -hx + i * stepX, y = -hy + j * stepY;
+      positions.push(x, hz[V(i, j)], -y);
+    }
+  }
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const a = V(i, j), b = V(i + 1, j), c = V(i + 1, j + 1), d = V(i, j + 1);
+      indices.push(a, b, c, a, c, d);
+    }
+  }
+  const topGeo = new THREE.BufferGeometry();
+  topGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  topGeo.setIndex(indices);
+  topGeo.computeVertexNormals();
+  const top = new THREE.Mesh(topGeo, MATS.terrain);
+  top.name = 'terrain';
+
+  const bot = -Math.max(0.5, cfg.base.depth);
+  const sp = [], si = [];
+  const edgeLoop = [];
+  for (let i = 0; i <= N; i++) edgeLoop.push([ -hx + i * stepX, -hy ]);
+  for (let j = 1; j <= N; j++) edgeLoop.push([ hx, -hy + j * stepY ]);
+  for (let i = N - 1; i >= 0; i--) edgeLoop.push([ -hx + i * stepX, hy ]);
+  for (let j = N - 1; j >= 1; j--) edgeLoop.push([ -hx, -hy + j * stepY ]);
+  const hAt = (x, y) => {
+    const i = Math.round((x + hx) / stepX), j = Math.round((y + hy) / stepY);
+    return hz[V(Math.max(0, Math.min(N, i)), Math.max(0, Math.min(N, j)))];
+  };
+  for (let k = 0; k < edgeLoop.length; k++) {
+    const [x, y] = edgeLoop[k];
+    sp.push(x, hAt(x, y), -y);
+    sp.push(x, bot, -y);
+  }
+  const M = edgeLoop.length;
+  for (let k = 0; k < M; k++) {
+    const a = k * 2, b = k * 2 + 1, c = ((k + 1) % M) * 2, d = ((k + 1) % M) * 2 + 1;
+    si.push(a, b, c, b, d, c);
+  }
+  const baseIdx = sp.length / 3;
+  sp.push(-hx, bot, hy,  hx, bot, hy,  hx, bot, -hy,  -hx, bot, -hy);
+  si.push(baseIdx, baseIdx + 2, baseIdx + 1, baseIdx, baseIdx + 3, baseIdx + 2);
+  const skirtGeo = new THREE.BufferGeometry();
+  skirtGeo.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
+  skirtGeo.setIndex(si);
+  skirtGeo.computeVertexNormals();
+  const skirt = new THREE.Mesh(skirtGeo, MATS.base);
+  skirt.name = 'base';
 
   const g = new THREE.Group();
-  g.add(base, terrain);
+  g.add(top, skirt);
   return g;
 }
 
@@ -1515,13 +1548,12 @@ function bufferRingOutward(ring, d) {
   return out;
 }
 
-// Terrain shaped to the council boundary: a stacked pair of watertight draped
-// slabs per mask ring — a base block plus a thin terrain-colour cap on top.
+// Terrain shaped to the council boundary: a thick draped slab per mask ring.
 function buildCouncilTerrain(groundAt) {
   const bot = -Math.max(0.5, cfg.base.depth);
-  const eps = terrainCrust();
   const group = new THREE.Group();
-  const surf = (x, y) => groundAt(x, y);
+  const topPos = [], topIdx = [];        // draped top surface (terrain material)
+  const wallPos = [], wallIdx = [];      // skirt walls + flat bottom (base material)
   for (const ringXY of EXT.mask) {
     let ring = bufferRingOutward(ringXY, 12); // ~ widest road half-width, so roads sit on the base
     if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring = ring.slice(0, -1);
@@ -1535,13 +1567,31 @@ function buildCouncilTerrain(groundAt) {
     const verts = [];
     for (let i = 0; i < pos.count; i++) verts.push([pos.getX(i), pos.getY(i)]);
     const tris = subdivideTriangulation(verts, Array.from(rawIdx), 60);
-    // base block (surface top → flat bottom) + terrain cap (thin slab on the surface)
-    const base = new THREE.Mesh(closedDrapedSolid(verts, tris, surf, () => bot), MATS.base);
-    base.name = 'base';
-    const terrain = new THREE.Mesh(closedDrapedSolid(verts, tris, (x, y) => surf(x, y) + eps, surf), MATS.terrain);
-    terrain.name = 'terrain';
-    group.add(base, terrain);
+    const base = topPos.length / 3;
+    for (const [x, y] of verts) topPos.push(x, groundAt(x, y), -y);
+    for (let t = 0; t < tris.length; t += 3) topIdx.push(base + tris[t], base + tris[t + 1], base + tris[t + 2]);
+    // flat bottom cap: reuse the (concave-correct) triangulation, reversed winding
+    const bb = wallPos.length / 3;
+    for (const [x, y] of verts) wallPos.push(x, bot, -y);
+    for (let t = 0; t < tris.length; t += 3) wallIdx.push(bb + tris[t], bb + tris[t + 2], bb + tris[t + 1]);
+    // skirt wall around the dense outer ring
+    const wb = wallPos.length / 3;
+    for (const [x, y] of dense) { const g = groundAt(x, y); wallPos.push(x, g, -y); wallPos.push(x, bot, -y); }
+    const m = dense.length;
+    for (let k = 0; k < m; k++) {
+      const a = wb + k * 2, b = a + 1, cc = wb + ((k + 1) % m) * 2, d = cc + 1;
+      wallIdx.push(a, b, cc, b, d, cc);
+    }
   }
+  const topGeo = new THREE.BufferGeometry();
+  topGeo.setAttribute('position', new THREE.Float32BufferAttribute(topPos, 3));
+  topGeo.setIndex(topIdx); topGeo.computeVertexNormals();
+  const top = new THREE.Mesh(topGeo, MATS.terrain); top.name = 'terrain';
+  const wallGeo = new THREE.BufferGeometry();
+  wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(wallPos, 3));
+  wallGeo.setIndex(wallIdx); wallGeo.computeVertexNormals();
+  const walls = new THREE.Mesh(wallGeo, MATS.base); walls.name = 'base';
+  group.add(top, walls);
   return group;
 }
 
@@ -2916,16 +2966,7 @@ function writeColour3MF(root, filename) {
     const name = LAYER_LABELS[key] || o.name || key;
     let g = groups.get(key);
     if (!g) { g = { key, name, color: col, verts: [], tris: [] }; groups.set(key, g); }
-    // weld coincident vertices by POSITION only (strip other attributes first, so
-    // differing normals don't block the merge) → shared edges, no open-edge seams
-    let welded;
-    try {
-      const po = new THREE.BufferGeometry();
-      po.setAttribute('position', o.geometry.getAttribute('position').clone());
-      if (o.geometry.index) po.setIndex(o.geometry.index.clone());
-      welded = mergeVertices(po, 1e-3);
-    } catch (e) { welded = o.geometry; }
-    const pos = welded.attributes.position, idx = welded.index;
+    const pos = o.geometry.attributes.position, idx = o.geometry.index;
     const base = g.verts.length / 3;
     for (let i = 0; i < pos.count; i++) {
       v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(o.matrixWorld);
