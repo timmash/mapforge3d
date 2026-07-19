@@ -967,14 +967,19 @@ function clippedRings(poly, project) {
 // a matching bottom surface, and side walls on the boundary edges — all sharing
 // one vertex set, so there are no unwelded seams or T-junctions (no open edges).
 // topY/botY are functions (x, y) → height.
-function closedDrapedSolid(verts, tris, topY, botY) {
+// Appends one closed solid (top + bottom + boundary walls) for a 2D triangulation
+// into shared position/index arrays, offsetting indices by whatever's already there
+// — lets several rings/footprints accumulate into one merged watertight mesh.
+function appendClosedSolid(positions, indices, verts, tris, topY, botY) {
+  const base = positions.length / 3;
   const n = verts.length;
-  const positions = [], indices = [];
-  for (const [x, y] of verts) positions.push(x, topY(x, y), -y);   // 0 .. n-1   top
-  for (const [x, y] of verts) positions.push(x, botY(x, y), -y);   // n .. 2n-1  bottom
-  for (let t = 0; t < tris.length; t += 3) indices.push(tris[t], tris[t + 1], tris[t + 2]);
-  for (let t = 0; t < tris.length; t += 3) indices.push(n + tris[t + 2], n + tris[t + 1], n + tris[t]);
-  // side walls on the boundary edges (edges used by exactly one triangle)
+  for (const [x, y] of verts) positions.push(x, topY(x, y), -y);   // base .. base+n-1     top
+  for (const [x, y] of verts) positions.push(x, botY(x, y), -y);   // base+n .. base+2n-1  bottom
+  for (let t = 0; t < tris.length; t += 3) indices.push(base + tris[t], base + tris[t + 1], base + tris[t + 2]);
+  for (let t = 0; t < tris.length; t += 3) indices.push(base + n + tris[t + 2], base + n + tris[t + 1], base + n + tris[t]);
+  // side walls on the boundary edges (edges used by exactly one triangle) — this
+  // closes the shape regardless of how messy the input triangulation is, since a
+  // wall goes up wherever a triangle edge has no neighbour.
   const cnt = new Map(), dir = new Map();
   const key = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
   for (let t = 0; t < tris.length; t += 3) {
@@ -988,14 +993,24 @@ function closedDrapedSolid(verts, tris, topY, botY) {
   for (const [k, c] of cnt) {
     if (c !== 1) continue;
     const [a, b] = dir.get(k);
-    indices.push(a, b, n + a,  b, n + b, n + a);   // wall quad reuses existing verts
+    indices.push(base + a, base + b, base + n + a,  base + b, base + n + b, base + n + a);
   }
+}
+
+function closedDrapedSolid(verts, tris, topY, botY) {
+  const positions = [], indices = [];
+  appendClosedSolid(positions, indices, verts, tris, topY, botY);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geo.setIndex(indices);
   geo.computeVertexNormals();
   return geo;
 }
+
+// How thick the terrain's own colour layer is (it's a thin watertight skin
+// oversunk into the full-depth base block below, so both stay independently
+// manifold — see closedDrapedSolid).
+const TERRAIN_SKIN = 2;
 
 function buildTerrainBlock(groundAt) {
   if (EXT.mask) return buildCouncilTerrain(groundAt);
@@ -1004,63 +1019,30 @@ function buildTerrainBlock(groundAt) {
   const N = Math.max(16, Math.round(cfg.terrain.res / 16) * 16);
   const stepX = (2 * hx) / N, stepY = (2 * hy) / N;
 
-  const hz = [];
-  for (let j = 0; j <= N; j++) {
-    for (let i = 0; i <= N; i++) {
-      hz.push(groundAt(-hx + i * stepX, -hy + j * stepY));
-    }
-  }
-
-  const positions = [], indices = [];
+  const verts = [];
   const V = (i, j) => j * (N + 1) + i;
   for (let j = 0; j <= N; j++) {
-    for (let i = 0; i <= N; i++) {
-      const x = -hx + i * stepX, y = -hy + j * stepY;
-      positions.push(x, hz[V(i, j)], -y);
-    }
+    for (let i = 0; i <= N; i++) verts.push([-hx + i * stepX, -hy + j * stepY]);
   }
+  const tris = [];
   for (let j = 0; j < N; j++) {
     for (let i = 0; i < N; i++) {
       const a = V(i, j), b = V(i + 1, j), c = V(i + 1, j + 1), d = V(i, j + 1);
-      indices.push(a, b, c, a, c, d);
+      tris.push(a, b, c, a, c, d);
     }
   }
-  const topGeo = new THREE.BufferGeometry();
-  topGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  topGeo.setIndex(indices);
-  topGeo.computeVertexNormals();
-  const top = new THREE.Mesh(topGeo, MATS.terrain);
-  top.name = 'terrain';
 
   const bot = -Math.max(0.5, cfg.base.depth);
-  const sp = [], si = [];
-  const edgeLoop = [];
-  for (let i = 0; i <= N; i++) edgeLoop.push([ -hx + i * stepX, -hy ]);
-  for (let j = 1; j <= N; j++) edgeLoop.push([ hx, -hy + j * stepY ]);
-  for (let i = N - 1; i >= 0; i--) edgeLoop.push([ -hx + i * stepX, hy ]);
-  for (let j = N - 1; j >= 1; j--) edgeLoop.push([ -hx, -hy + j * stepY ]);
-  const hAt = (x, y) => {
-    const i = Math.round((x + hx) / stepX), j = Math.round((y + hy) / stepY);
-    return hz[V(Math.max(0, Math.min(N, i)), Math.max(0, Math.min(N, j)))];
-  };
-  for (let k = 0; k < edgeLoop.length; k++) {
-    const [x, y] = edgeLoop[k];
-    sp.push(x, hAt(x, y), -y);
-    sp.push(x, bot, -y);
-  }
-  const M = edgeLoop.length;
-  for (let k = 0; k < M; k++) {
-    const a = k * 2, b = k * 2 + 1, c = ((k + 1) % M) * 2, d = ((k + 1) % M) * 2 + 1;
-    si.push(a, b, c, b, d, c);
-  }
-  const baseIdx = sp.length / 3;
-  sp.push(-hx, bot, hy,  hx, bot, hy,  hx, bot, -hy,  -hx, bot, -hy);
-  si.push(baseIdx, baseIdx + 2, baseIdx + 1, baseIdx, baseIdx + 3, baseIdx + 2);
-  const skirtGeo = new THREE.BufferGeometry();
-  skirtGeo.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
-  skirtGeo.setIndex(si);
-  skirtGeo.computeVertexNormals();
-  const skirt = new THREE.Mesh(skirtGeo, MATS.base);
+  const groundY = (x, y) => groundAt(x, y);
+
+  const top = new THREE.Mesh(
+    closedDrapedSolid(verts, tris, groundY, (x, y) => groundAt(x, y) - TERRAIN_SKIN),
+    MATS.terrain);
+  top.name = 'terrain';
+
+  const skirt = new THREE.Mesh(
+    closedDrapedSolid(verts, tris, groundY, () => bot),
+    MATS.base);
   skirt.name = 'base';
 
   const g = new THREE.Group();
@@ -1093,12 +1075,13 @@ function bufferRingOutward(ring, d) {
   return out;
 }
 
-// Terrain shaped to the council boundary: a thick draped slab per mask ring.
+// Terrain shaped to the council boundary: a thin terrain-coloured skin over a
+// full-depth base block, one closed solid each (see closedDrapedSolid), per mask ring.
 function buildCouncilTerrain(groundAt) {
   const bot = -Math.max(0.5, cfg.base.depth);
   const group = new THREE.Group();
-  const topPos = [], topIdx = [];        // draped top surface (terrain material)
-  const wallPos = [], wallIdx = [];      // skirt walls + flat bottom (base material)
+  const topPos = [], topIdx = [];    // thin draped skin (terrain material)
+  const basePos = [], baseIdx = [];  // full-depth block (base material)
   for (const ringXY of EXT.mask) {
     let ring = bufferRingOutward(ringXY, 12); // ~ widest road half-width, so roads sit on the base
     if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring = ring.slice(0, -1);
@@ -1112,30 +1095,18 @@ function buildCouncilTerrain(groundAt) {
     const verts = [];
     for (let i = 0; i < pos.count; i++) verts.push([pos.getX(i), pos.getY(i)]);
     const tris = subdivideTriangulation(verts, Array.from(rawIdx), 60);
-    const base = topPos.length / 3;
-    for (const [x, y] of verts) topPos.push(x, groundAt(x, y), -y);
-    for (let t = 0; t < tris.length; t += 3) topIdx.push(base + tris[t], base + tris[t + 1], base + tris[t + 2]);
-    // flat bottom cap: reuse the (concave-correct) triangulation, reversed winding
-    const bb = wallPos.length / 3;
-    for (const [x, y] of verts) wallPos.push(x, bot, -y);
-    for (let t = 0; t < tris.length; t += 3) wallIdx.push(bb + tris[t], bb + tris[t + 2], bb + tris[t + 1]);
-    // skirt wall around the dense outer ring
-    const wb = wallPos.length / 3;
-    for (const [x, y] of dense) { const g = groundAt(x, y); wallPos.push(x, g, -y); wallPos.push(x, bot, -y); }
-    const m = dense.length;
-    for (let k = 0; k < m; k++) {
-      const a = wb + k * 2, b = a + 1, cc = wb + ((k + 1) % m) * 2, d = cc + 1;
-      wallIdx.push(a, b, cc, b, d, cc);
-    }
+    const groundY = (x, y) => groundAt(x, y);
+    appendClosedSolid(topPos, topIdx, verts, tris, groundY, (x, y) => groundAt(x, y) - TERRAIN_SKIN);
+    appendClosedSolid(basePos, baseIdx, verts, tris, groundY, () => bot);
   }
   const topGeo = new THREE.BufferGeometry();
   topGeo.setAttribute('position', new THREE.Float32BufferAttribute(topPos, 3));
   topGeo.setIndex(topIdx); topGeo.computeVertexNormals();
   const top = new THREE.Mesh(topGeo, MATS.terrain); top.name = 'terrain';
-  const wallGeo = new THREE.BufferGeometry();
-  wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(wallPos, 3));
-  wallGeo.setIndex(wallIdx); wallGeo.computeVertexNormals();
-  const walls = new THREE.Mesh(wallGeo, MATS.base); walls.name = 'base';
+  const baseGeo = new THREE.BufferGeometry();
+  baseGeo.setAttribute('position', new THREE.Float32BufferAttribute(basePos, 3));
+  baseGeo.setIndex(baseIdx); baseGeo.computeVertexNormals();
+  const walls = new THREE.Mesh(baseGeo, MATS.base); walls.name = 'base';
   group.add(top, walls);
   return group;
 }
@@ -1159,6 +1130,11 @@ function buildBuildings(elements, project, groundAt, extraPolys) {
   const footprints = []; // unclipped projected outer rings, used to detect mapped buildings
   const polys = collectPolygons(elements, t => t['building'] !== undefined);
   if (extraPolys && extraPolys.length) polys.push(...extraPolys);
+  // Merge every mapped building into one watertight mesh (see closedDrapedSolid):
+  // each footprint's own top/bottom/wall triangles form an independent closed
+  // shell, so real-world OSM footprints (touching holes, sliver clips, etc.)
+  // can't leave open edges the way ExtrudeGeometry's cap triangulation could.
+  const bldPos = [], bldIdx = [];
   for (const poly of polys) {
     try {
       footprints.push(ringFromGeometry(poly.outer, project));
@@ -1177,13 +1153,23 @@ function buildBuildings(elements, project, groundAt, extraPolys) {
           ground = groundAt(cx, cy);
         }
         const sink = Math.max(1.5, ground - minG + 0.5);
-        const geo = new THREE.ExtrudeGeometry(shapeFromRings(rings.outer, rings.holes), { depth: h + sink, bevelEnabled: false });
-        geo.rotateX(-Math.PI / 2);
-        const mesh = new THREE.Mesh(geo, MATS.buildings);
-        mesh.position.y = ground - sink; // top ends up at ground + h, base below the lowest corner
-        group.add(mesh);
+        const shapeGeo = new THREE.ShapeGeometry(shapeFromRings(rings.outer, rings.holes));
+        const pos = shapeGeo.getAttribute('position');
+        const rawIdx = shapeGeo.getIndex() ? shapeGeo.getIndex().array : null;
+        if (!rawIdx) continue;
+        const verts = [];
+        for (let i = 0; i < pos.count; i++) verts.push([pos.getX(i), pos.getY(i)]);
+        const top = ground + h, bot = ground - sink;
+        appendClosedSolid(bldPos, bldIdx, verts, Array.from(rawIdx), () => top, () => bot);
       }
     } catch (e) { /* skip malformed footprints */ }
+  }
+  if (bldPos.length) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(bldPos, 3));
+    geo.setIndex(bldIdx);
+    geo.computeVertexNormals();
+    group.add(new THREE.Mesh(geo, MATS.buildings));
   }
 
   // Unmapped buildings: place a default box at OSM address / building nodes

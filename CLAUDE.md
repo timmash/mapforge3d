@@ -7,7 +7,7 @@ halfmaps.io/3d-map-exporter but an independent implementation on open data.
 - **Live:** https://timmash.github.io/mapforge3d/  (GitHub Pages)
 - **Repo:** https://github.com/timmash/mapforge3d  (branch `main`, served from repo root)
 - **This folder** is a git clone of that repo. Deploy = commit + `git push origin main`.
-- **Current version: 1.036** (shown as a badge in the header).
+- **Current version: 1.038** (shown as a badge in the header).
 
 ## Files
 - `app.js` — the entire app (one ES module, ~2500 lines). All logic lives here.
@@ -54,9 +54,12 @@ And sanity-check syntax: `node --check app.js`.
 - **Data:** Overpass (buildings/roads/water/green + address nodes + waterway lines),
   AWS terrarium elevation tiles, Nominatim geocode/boundary. 30-day Cache Storage cache
   with a Clear-cache button.
-- **Geometry:** terrain draped grid/slab; roads & waterways = draped ribbon tubes; water &
-  green = `closedDrapedSolid()` watertight slabs; buildings = ExtrudeGeometry + address-node
-  boxes. Suburb mode clips everything to the boundary (polygon-clipping, split-at-line).
+- **Geometry:** roads & waterways = draped ribbon tubes (already closed tubes, incl. end
+  caps); terrain, base block, water, green and mapped buildings are all built with
+  `closedDrapedSolid()` / `appendClosedSolid()` — top + bottom + boundary walls sharing one
+  vertex set, watertight regardless of input triangulation quality; unmapped-building nodes
+  = plain BoxGeometry. Suburb mode clips everything to the boundary (polygon-clipping,
+  split-at-line).
 - **A3 backing map:** greyscale flat map on an A3 sheet (297×420mm), 3D model centred in the
   lower two-thirds at 1:1; preview-only + PDF export. Constants A3_W/A3_H/MODEL_PRINT_MM(200)/
   MODEL_CX_MM/MODEL_CY_MM. Optional big title (suburb/postcode), matched flat + 3D via a shared
@@ -71,13 +74,16 @@ And sanity-check syntax: `node --check app.js`.
   "Cannot access 'X' before initialization" at load — which then surfaces as a confusing
   error inside generate(). Keep shared vars (A3_*/MODEL_*/_titleFont) declared near the top;
   null-safe top-level DOM wiring with `$('id')?.addEventListener`.
-- **Watertight geometry (Bambu "open edges"):** water/green use `closedDrapedSolid()` (top +
-  underside + boundary walls sharing one vertex set — verified manifold). Buildings, node
-  boxes, roads and the terrain still export with open edges. To fix terrain, build a base
-  block (surface top → flat bottom) plus a terrain-colour cap that extrudes DOWNWARD from the
-  surface (surface → surface-ε), NOT upward — extruding upward buries the buildings/roads
-  (that mistake was v1.035, reverted in v1.036). Weld other objects with
-  BufferGeometryUtils.mergeVertices (position-only) at export.
+- **Watertight geometry (Bambu "open edges"):** everything solid (terrain, base, water,
+  green, mapped buildings) is built with `closedDrapedSolid()` / `appendClosedSolid()` — top
+  + bottom + boundary walls sharing one vertex set, derived from actual triangle adjacency so
+  it's manifold no matter how messy the input polygon is (self-touching rings, sliver clips,
+  etc). Terrain is a thin `TERRAIN_SKIN`-thick colour layer that extrudes DOWNWARD from the
+  draped surface (surface → surface-ε), NOT upward — extruding upward buries the
+  buildings/roads (that mistake was v1.035, reverted in v1.036). The base block is the full
+  depth (surface → cfg.base.depth), independently watertight and deliberately overlapping the
+  terrain skin by `TERRAIN_SKIN` so there's never a gap. No export-time vertex welding needed
+  — each object is closed by construction. Road/waterway ribbons were already closed tubes.
 - Pre-baked real building footprints per suburb load from `buildings/<slug>.buildings.json`
   if present (see bake script referenced in git history); OSM covers many suburbs already.
 
