@@ -1164,13 +1164,6 @@ function buildBuildings(elements, project, groundAt, extraPolys) {
       }
     } catch (e) { /* skip malformed footprints */ }
   }
-  if (bldPos.length) {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(bldPos, 3));
-    geo.setIndex(bldIdx);
-    geo.computeVertexNormals();
-    group.add(new THREE.Mesh(geo, MATS.buildings));
-  }
 
   // Unmapped buildings: place a default box at OSM address / building nodes
   // that have no building outline (way) drawn yet.
@@ -1206,10 +1199,20 @@ function buildBuildings(elements, project, groundAt, extraPolys) {
         minG = Math.min(minG, groundAt(bx + ox, by + oy));
       }
       const sink = Math.max(1.0, ground - minG + 0.5);
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(s, h + sink, s), MATS.buildings);
-      mesh.position.set(bx, ground - sink + (h + sink) / 2, -by); // top at ground + h
-      group.add(mesh);
+      // built the same watertight way as mapped buildings (not THREE.BoxGeometry,
+      // which duplicates a vertex per face for flat shading — fine to look at, but
+      // not index-shared, so a strict 3MF checker like Bambu's flags it as open edges)
+      const hs = s / 2;
+      const verts = [[bx - hs, by - hs], [bx + hs, by - hs], [bx + hs, by + hs], [bx - hs, by + hs]];
+      appendClosedSolid(bldPos, bldIdx, verts, [0, 1, 2, 0, 2, 3], () => ground + h, () => ground - sink);
     }
+  }
+  if (bldPos.length) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(bldPos, 3));
+    geo.setIndex(bldIdx);
+    geo.computeVertexNormals();
+    group.add(new THREE.Mesh(geo, MATS.buildings));
   }
   return group;
 }
