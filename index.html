@@ -135,7 +135,7 @@
   }
   .size-grid {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 5px;
   }
   .size-grid button { padding: 8px 2px; font-size: 11px; }
@@ -197,6 +197,7 @@
     flex: 1; background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px;
   }
+  .ctl-row input[type="text"] { flex: 1; min-width: 0; padding: 5px 8px; font-size: 12px; }
   .ctl-val { flex: 0 0 34px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
   .export-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .export-grid button { font-weight: 600; }
@@ -263,6 +264,7 @@
     box-shadow: 0 0 0 9999px rgba(8, 10, 14, 0.35);
     z-index: 5;
   }
+  #selBox.circle { border-radius: 50%; }
   #selLabel {
     position: absolute;
     bottom: -26px; left: 50%;
@@ -343,7 +345,7 @@
 <body>
   <div id="sidebar">
     <header>
-      <h1>MapForge <span>3D</span><span class="ver">v1.039</span></h1>
+      <h1>MapForge <span>3D</span><span class="ver">v1.040</span></h1>
       <p>Turn any place on Earth into a 3D model — real buildings, terrain, roads and water from OpenStreetMap.</p>
     </header>
 
@@ -373,10 +375,14 @@
         <button id="searchBtn">Go</button>
       </div>
       <div id="searchResults"></div>
-      <p class="hint">Or just pan / zoom the map. The blue square is what gets built.</p>
+      <p class="hint">Or just pan / zoom the map. The blue shape is what gets built.</p>
+      <h2 style="margin-top:16px">Shape</h2>
+      <div class="mode-toggle" id="shapeToggle">
+        <button class="active" data-shape="square">Square</button>
+        <button data-shape="circle">Circle</button>
+      </div>
       <h2 style="margin-top:16px">Area size</h2>
       <div class="size-grid">
-        <button data-size="250">250 m</button>
         <button data-size="500">500 m</button>
         <button data-size="1000">1 km</button>
         <button data-size="2000">2 km</button>

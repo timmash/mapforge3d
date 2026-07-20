@@ -7,7 +7,7 @@ halfmaps.io/3d-map-exporter but an independent implementation on open data.
 - **Live:** https://timmash.github.io/mapforge3d/  (GitHub Pages)
 - **Repo:** https://github.com/timmash/mapforge3d  (branch `main`, served from repo root)
 - **This folder** is a git clone of that repo. Deploy = commit + `git push origin main`.
-- **Current version: 1.039** (shown as a badge in the header).
+- **Current version: 1.040** (shown as a badge in the header).
 
 ## Files
 - `app.js` — the entire app (one ES module, ~2500 lines). All logic lives here.
@@ -49,8 +49,12 @@ And sanity-check syntax: `node --check app.js`.
   target another cfg key via a trailing `{ck:'base'}`; a layer can co-toggle siblings via
   `toggleAlso`; group subtitles via `group`).
 - **Modes:** top toggle Suburb (searchable combobox of 222 Melbourne suburbs; Nominatim
-  boundary) vs Custom (address search + area size square). state.uiMode / state.council /
-  state.mode('suburb'|'square'). Internal misnomer: "council" == the selected suburb.
+  boundary) vs Custom (address search + Square/Circle shape + area size). state.uiMode /
+  state.council / state.mode('suburb'|'square') / state.areaShape('square'|'circle').
+  Internal misnomer: "council" == the selected suburb; state.mode stays 'square' for both
+  Custom shapes. Circle reuses the whole suburb-mask pipeline: `circleRing()` builds a
+  96-gon and is dropped straight into `EXT.mask`, so terrain shaping and
+  building/road/water clipping need no shape-specific code at all.
 - **Data:** Overpass (buildings/roads/water/green + address nodes + waterway lines),
   AWS terrarium elevation tiles, Nominatim geocode/boundary. 30-day Cache Storage cache
   with a Clear-cache button.
@@ -65,8 +69,18 @@ And sanity-check syntax: `node --check app.js`.
   split-at-line).
 - **A3 backing map:** greyscale flat map on an A3 sheet (297×420mm), 3D model centred in the
   lower two-thirds at 1:1; preview-only + PDF export. Constants A3_W/A3_H/MODEL_PRINT_MM(200)/
-  MODEL_CX_MM/MODEL_CY_MM. Optional big title (suburb/postcode), matched flat + 3D via a shared
-  font layout. "Frame" and "Environment" (floor) layers are preview-only decoration.
+  MODEL_CX_MM/MODEL_CY_MM. Optional big title (none/postcode/suburb/custom — free text up to
+  30 chars via `cfg.backing.customTitle`, defaults to "custom" on entering Custom mode since
+  there's no suburb name), matched flat + 3D via a shared font layout, all funnelled through
+  `backingTitleText()` so both renders always agree. "Frame" and "Environment" (floor) layers
+  are preview-only decoration.
+- **Inspector `showWhen`:** an item's trailing options object can carry
+  `showWhen: [prop, value]` to only display that row while a sibling item (e.g. Title) holds
+  that value — see `customTitle`. `buildInspectorUI()` gives every `select` a
+  `ctl_<ck>_<prop>` id and calls `refreshShowWhen()` on change; set a value programmatically
+  by updating `cfg` then dispatching a `change` event on that id (see `setMode()`'s
+  Custom-mode default) rather than writing `cfg` directly, or the dropdown and dependent rows
+  drift out of sync with it.
 - **Exports:** colour 3MF (one named+coloured object per layer, for Bambu), STL/OBJ/GLB,
   A3 PDF, separate 3D-title 3MF. Reached via the floating "Download" button on the 3D view.
 

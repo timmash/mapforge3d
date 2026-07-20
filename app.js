@@ -16,7 +16,8 @@ import { zipSync, strToU8 } from 'https://esm.sh/fflate@0.8.2';
 /* ============================================================ state & layer config */
 
 const state = {
-  sizeMeters: null,  // side length of the selection square (null = nothing chosen yet)
+  sizeMeters: null,  // side length (square) / diameter (circle) of the selection area
+  areaShape: 'square', // Custom-mode shape: 'square' | 'circle'
   model: null,       // THREE.Group of the last generated model
   modelName: 'queens-parade-ashwood',
   last: null,        // cached fetch: {bbox, elements, sampleElev, minElev}
@@ -68,7 +69,7 @@ const MAX_SPAN_KM = 12; // sanity guard on a fetched boundary's bounding box
 const cfg = {
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
-  backing:    { on: true,  title: 'suburb', outline: 0, title3d: true, nodes: true },
+  backing:    { on: true,  title: 'suburb', customTitle: '', outline: 0, title3d: true, nodes: true },
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
   backdrop:   { on: true,  style: 'brick' },
   buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
@@ -172,22 +173,35 @@ function metersPerPixel() {
 }
 function updateSelBox() {
   const el = $('selBox');
-  // Only show the square in Custom mode once an area size has been chosen.
+  // Never show the selection shape over the 3D viewer (a stray map 'move' or
+  // window 'resize' event firing while the viewer's open would otherwise re-show it).
+  if ($('viewer').style.display === 'block') { el.style.display = 'none'; return; }
+  // Only show the shape in Custom mode once an area size has been chosen.
   if (state.uiMode !== 'custom' || !state.sizeMeters) { el.style.display = 'none'; return; }
   el.style.display = 'block';
+  el.classList.toggle('circle', state.areaShape === 'circle');
   const px = state.sizeMeters / metersPerPixel();
   const maxPx = Math.min(window.innerWidth, window.innerHeight) * 0.9;
   el.style.width = el.style.height = Math.min(px, maxPx) + 'px';
   const km = state.sizeMeters >= 1000 ? (state.sizeMeters / 1000) + ' km' : state.sizeMeters + ' m';
-  $('selLabel').textContent = `${km} × ${km}`;
+  $('selLabel').textContent = state.areaShape === 'circle' ? `${km} diameter` : `${km} × ${km}`;
 }
 map.on('move', updateSelBox);
 map.on('load', updateSelBox);
 window.addEventListener('resize', updateSelBox);
 
+document.querySelectorAll('#shapeToggle button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.areaShape = btn.dataset.shape;
+    document.querySelectorAll('#shapeToggle button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    updateSelBox();
+  });
+});
+
 document.querySelectorAll('.size-grid button').forEach(btn => {
   btn.addEventListener('click', () => {
-    // choosing a square size returns to square mode
+    // choosing an area size returns to square/circle mode (whichever shape's active)
     clearArea();
     document.querySelectorAll('.size-grid button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
@@ -215,7 +229,7 @@ function clearArea() {
   state.mode = 'square';
   state.council = null;
   clearAreaOutline();
-  $('selBox').style.display = (state.uiMode === 'custom' && state.sizeMeters) ? 'block' : 'none';
+  updateSelBox();
   const inp = $('councilSearch'); if (inp) inp.value = '';
 }
 
@@ -316,6 +330,10 @@ function setMode(mode) {
     // Custom mode: reset to a square selection the user pans over the map.
     clearArea();          // → square mode, clears any suburb
     updateSelBox();
+    // No suburb name to print in Custom mode, so default the backing title to Custom.
+    cfg.backing.title = 'custom';
+    const sel = document.getElementById('ctl_backing_title');
+    if (sel) { sel.value = 'custom'; sel.dispatchEvent(new Event('change')); }
   }
   updateLayersVisibility();
 }
@@ -1050,6 +1068,18 @@ function buildTerrainBlock(groundAt) {
   return g;
 }
 
+// A closed, CCW circle ring (matches suburb maskRings' winding/format) centred
+// on the origin — lets Custom-mode "Circle" reuse the whole suburb-mask
+// pipeline (terrain shaping, building/road/water clipping) with no other code.
+function circleRing(radius, segments) {
+  const ring = [];
+  for (let i = 0; i <= segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    ring.push([radius * Math.cos(a), radius * Math.sin(a)]);
+  }
+  return ring;
+}
+
 // Offset a closed ring outward by d metres (average-of-adjacent-edge normals).
 // Keeps the terrain slightly larger than the clipped features so road ribbons
 // that hug the boundary always land on the base rather than floating.
@@ -1392,6 +1422,9 @@ function buildModel() {
     let hx = 0, hy = 0;
     for (const r of c.maskRings) for (const [x, y] of r) { hx = Math.max(hx, Math.abs(x)); hy = Math.max(hy, Math.abs(y)); }
     EXT = { hx: hx + 5, hy: hy + 5, mask: c.maskRings };
+  } else if (state.uiMode === 'custom' && state.areaShape === 'circle') {
+    const r = state.sizeMeters / 2;
+    EXT = { hx: r, hy: r, mask: [circleRing(r, 96)] };
   } else {
     const half = state.sizeMeters / 2;
     EXT = { hx: half, hy: half, mask: null };
@@ -1723,7 +1756,8 @@ const INSPECTOR = [
     ['depth', 'Base depth (m)', 'range', 1, 100, 1, { ck: 'base' }],
   ]},
   { key: 'backing', label: 'Backing map', toggle: true, group: 'Printable map', items: [
-    ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title']]],
+    ['title', 'Title', 'select', [['none', 'No title'], ['postcode', 'Postcode title'], ['suburb', 'Suburb title'], ['custom', 'Custom title']]],
+    ['customTitle', 'Custom title text', 'text', 30, { showWhen: ['title', 'custom'] }],
     ['title3d', '3D printable title', 'check'],
     ['nodes', 'Unmapped buildings (address nodes)', 'check'],
     ['outline', 'White outline (mm)', 'range', 0, 20, 0.5],
@@ -1812,6 +1846,14 @@ function buildInspectorUI() {
       if (!open) { body.style.display = 'block'; chev.textContent = '▾'; }
     });
 
+    // items with a trailing {showWhen: [prop, value]} option only display while
+    // another item in this layer holds that value (e.g. the custom title text
+    // box only makes sense once Title is set to "Custom title").
+    const showWhenRows = [];
+    const refreshShowWhen = () => {
+      for (const { row, ck, dep, want } of showWhenRows) row.style.display = (cfg[ck][dep] === want) ? '' : 'none';
+    };
+
     for (const item of layer.items) {
       const [prop, label, kind] = item;
       // an item can target a different config object via a trailing {ck:'base'} option
@@ -1825,6 +1867,12 @@ function buildInspectorUI() {
       const lab = document.createElement('label');
       lab.textContent = label;
       row.appendChild(lab);
+
+      if (opts && opts.showWhen) {
+        const [dep, want] = opts.showWhen;
+        row.style.display = (cc[dep] === want) ? '' : 'none';
+        showWhenRows.push({ row, ck, dep, want });
+      }
 
       if (kind === 'color') {
         const inp = document.createElement('input');
@@ -1848,14 +1896,22 @@ function buildInspectorUI() {
         row.appendChild(inp);
       } else if (kind === 'select') {
         const sel = document.createElement('select');
+        sel.id = `ctl_${ck}_${prop}`;
         for (const [val, text] of item[3]) {
           const o = document.createElement('option');
           o.value = val; o.textContent = text;
           sel.appendChild(o);
         }
         sel.value = cc[prop];
-        sel.addEventListener('change', () => { cc[prop] = sel.value; layerChanged(layer.key); });
+        sel.addEventListener('change', () => { cc[prop] = sel.value; layerChanged(layer.key); refreshShowWhen(); });
         row.appendChild(sel);
+      } else if (kind === 'text') {
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.maxLength = item[3] || 100;
+        inp.value = cc[prop] || '';
+        inp.addEventListener('input', () => { cc[prop] = inp.value; layerChanged(layer.key); });
+        row.appendChild(inp);
       } else { // range
         const [, , , min, max, step] = item;
         const inp = document.createElement('input');
@@ -2006,6 +2062,7 @@ function backingTitleText() {
       || (state.placeLabels && state.placeLabels.suburb) || '';
     return name.toUpperCase();
   }
+  if (mode === 'custom') return (cfg.backing.customTitle || '').toUpperCase();
   return '';
 }
 
