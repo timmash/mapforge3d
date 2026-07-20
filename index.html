@@ -345,7 +345,7 @@
 <body>
   <div id="sidebar">
     <header>
-      <h1>MapForge <span>3D</span><span class="ver">v1.041</span></h1>
+      <h1>MapForge <span>3D</span><span class="ver">v1.042</span></h1>
       <p>Turn any place on Earth into a 3D model — real buildings, terrain, roads and water from OpenStreetMap.</p>
     </header>
 
@@ -360,7 +360,7 @@
     <div class="section" id="suburbPanel">
       <h2 class="h2row">2 · Suburb
         <span class="info">i</span>
-        <span class="info-pop">Builds the whole suburb to its real boundary. Real footprints load automatically if you've added <code>buildings/&lt;suburb&gt;.buildings.json</code>.</span>
+        <span class="info-pop">Builds the whole suburb to its real boundary. Where OSM doesn't have a building's outline yet, a real footprint is pulled in automatically from pre-baked Overture Maps data (falls back to a plain box only where neither has coverage).</span>
       </h2>
       <div class="combo" id="suburbCombo">
         <input type="text" id="councilSearch" placeholder="Search a suburb…" autocomplete="off">

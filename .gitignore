@@ -1,5 +1,6 @@
 mapforge3d/
 mapforge3d-test.html
+__pycache__/
 index_standalone.html
 todo.txt
 COMMIT_MSG.txt

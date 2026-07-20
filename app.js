@@ -24,7 +24,7 @@ const state = {
   mode: 'square',    // 'square' | 'suburb'
   council: null,     // selected area: { name, slug, bbox, maskRings } when mode==='suburb'
   uiMode: 'suburb',  // top toggle: 'suburb' | 'custom'
-  baseData: null,    // cached inputs for rebuilding the backing map: {bbox, elements, prebaked, M}
+  baseData: null,    // cached inputs for rebuilding the backing map: {bbox, elements, gapBuildings, M}
   placeLabels: null, // { suburb, postcode } for the backing-map title (best-effort)
   frame: null,       // THREE.Group of the decorative frame (preview only)
   backdrop: null,    // THREE.Group of the backdrop wall/floor (preview only)
@@ -33,8 +33,7 @@ const state = {
 };
 
 // All Victorian localities (source: matthewproctor/australianpostcodes, VIC
-// 'Delivery Area' entries). The slug matches the optional pre-baked footprints
-// file the app looks for: buildings/<slug>.buildings.json
+// 'Delivery Area' entries).
 const SUBURBS = [
   'Abbeyard','Abbotsford','Aberfeldie','Aberfeldy','Acheron','Ada','Adams Estate','Addington','Adelaide Lead',
   'Agnes','Ailsa','Aintree','Aire Valley','Aireys Inlet','Airly','Airport West','Albacutya','Albanvale',
@@ -1534,40 +1533,55 @@ function buildBuildings(elements, project, groundAt, extraPolys) {
   group.name = 'buildings';
   const footprints = []; // unclipped projected outer rings, used to detect mapped buildings
   const polys = collectPolygons(elements, t => t['building'] !== undefined);
-  if (extraPolys && extraPolys.length) polys.push(...extraPolys);
   // Merge every mapped building into one watertight mesh (see closedDrapedSolid):
   // each footprint's own top/bottom/wall triangles form an independent closed
   // shell, so real-world OSM footprints (touching holes, sliver clips, etc.)
   // can't leave open edges the way ExtrudeGeometry's cap triangulation could.
   const bldPos = [], bldIdx = [];
-  for (const poly of polys) {
-    try {
-      footprints.push(ringFromGeometry(poly.outer, project));
-      let h = taggedHeight(poly.tags);
-      h = (h === null ? c.defH : h) * c.scale + c.extra;
-      h = Math.max(h, c.minH, 1);
-      for (const rings of clippedRings(poly, project)) {   // may be split at the boundary
-        // ground reference + how far the base must sink to sit into the terrain everywhere
-        let minG = Infinity;
-        for (const [x, y] of rings.outer) minG = Math.min(minG, groundAt(x, y));
-        let ground;
-        if (c.fit === 'flat') {
-          ground = minG;
-        } else {
-          const [cx, cy] = centroidOf(rings.outer);
-          ground = groundAt(cx, cy);
-        }
-        const sink = Math.max(1.5, ground - minG + 0.5);
-        const shapeGeo = new THREE.ShapeGeometry(shapeFromRings(rings.outer, rings.holes));
-        const pos = shapeGeo.getAttribute('position');
-        const rawIdx = shapeGeo.getIndex() ? shapeGeo.getIndex().array : null;
-        if (!rawIdx) continue;
-        const verts = [];
-        for (let i = 0; i < pos.count; i++) verts.push([pos.getX(i), pos.getY(i)]);
-        const top = ground + h, bot = ground - sink;
-        appendClosedSolid(bldPos, bldIdx, verts, Array.from(rawIdx), () => top, () => bot);
+  const addBuildingPoly = (poly) => {
+    footprints.push(ringFromGeometry(poly.outer, project));
+    let h = taggedHeight(poly.tags);
+    h = (h === null ? c.defH : h) * c.scale + c.extra;
+    h = Math.max(h, c.minH, 1);
+    for (const rings of clippedRings(poly, project)) {   // may be split at the boundary
+      // ground reference + how far the base must sink to sit into the terrain everywhere
+      let minG = Infinity;
+      for (const [x, y] of rings.outer) minG = Math.min(minG, groundAt(x, y));
+      let ground;
+      if (c.fit === 'flat') {
+        ground = minG;
+      } else {
+        const [cx, cy] = centroidOf(rings.outer);
+        ground = groundAt(cx, cy);
       }
-    } catch (e) { /* skip malformed footprints */ }
+      const sink = Math.max(1.5, ground - minG + 0.5);
+      const shapeGeo = new THREE.ShapeGeometry(shapeFromRings(rings.outer, rings.holes));
+      const pos = shapeGeo.getAttribute('position');
+      const rawIdx = shapeGeo.getIndex() ? shapeGeo.getIndex().array : null;
+      if (!rawIdx) return;
+      const verts = [];
+      for (let i = 0; i < pos.count; i++) verts.push([pos.getX(i), pos.getY(i)]);
+      const top = ground + h, bot = ground - sink;
+      appendClosedSolid(bldPos, bldIdx, verts, Array.from(rawIdx), () => top, () => bot);
+    }
+  };
+  for (const poly of polys) {
+    try { addBuildingPoly(poly); } catch (e) { /* skip malformed footprints */ }
+  }
+  // Gap-fill (Overture) footprints: OSM-mapped buildings always win, so skip
+  // anything that lands on ground OSM already covers — Overture's own
+  // snapshot was already filtered to non-OSM-sourced buildings at bake time,
+  // but OSM keeps getting edited after that snapshot, so this re-checks
+  // against the CURRENT live OSM data for this exact generate.
+  if (extraPolys && extraPolys.length) {
+    for (const poly of extraPolys) {
+      try {
+        const outerXY = ringFromGeometry(poly.outer, project);
+        const [cx, cy] = centroidOf(outerXY);
+        if (footprints.some(ring => pointInRing(cx, cy, ring))) continue;
+        addBuildingPoly(poly);
+      } catch (e) { /* skip malformed footprints */ }
+    }
   }
 
   // Unmapped buildings: place a default box at OSM address / building nodes
@@ -1788,7 +1802,7 @@ function buildFlatPolys(elements, project, groundAt, layerKey, match) {
 /* ============================================================ model build (from cached data) */
 
 function buildModel() {
-  const { bbox, elements, sampleElev, minElev, prebaked } = state.last;
+  const { bbox, elements, sampleElev, minElev, gapBuildings } = state.last;
   const project = makeProjector(bbox.lat0, bbox.lon0);
 
   // set the active build extent: council mask if present, else the square
@@ -1819,7 +1833,7 @@ function buildModel() {
 
   const counts = {};
   if (cfg.buildings.on) {
-    const extra = prebaked ? prebakedToPolys(prebaked, project) : null;
+    const extra = gapBuildings ? prebakedToPolys(gapBuildings, project) : null;
     const g = buildBuildings(elements, project, groundAt, extra);
     counts.buildings = g.children.length;
     model.add(g);
@@ -1863,14 +1877,34 @@ function prebakedToPolys(fc, project) {
   return polys;
 }
 
-// Load buildings/<slug>.buildings.json (returns null if none exists).
-async function loadPrebaked(slug) {
-  if (!slug) return null;
-  try {
-    const res = await fetch('buildings/' + slug + '.buildings.json', { cache: 'force-cache' });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (e) { return null; }
+// Gap-fill buildings: a statewide grid of pre-baked Overture footprints for
+// buildings OSM doesn't have yet (see bake-vic-buildings-tiles.py). Tiles are
+// 0.05°, named buildings-tiles/<tx>_<ty>.json — no manifest; a missing tile
+// (404) just means no gap-fill data there (outside the baked locality scope,
+// or genuinely no extra buildings), same as any other empty result.
+const GAP_TILE_DEG = 0.05;
+function tilesForBbox(bbox) {
+  const txMin = Math.floor(bbox.west / GAP_TILE_DEG), txMax = Math.floor(bbox.east / GAP_TILE_DEG);
+  const tyMin = Math.floor(bbox.south / GAP_TILE_DEG), tyMax = Math.floor(bbox.north / GAP_TILE_DEG);
+  const tiles = [];
+  for (let tx = txMin; tx <= txMax; tx++) for (let ty = tyMin; ty <= tyMax; ty++) tiles.push([tx, ty]);
+  return tiles;
+}
+
+// Fetch every gap-fill tile covering bbox and merge them into one
+// FeatureCollection (returns null if none of them have data).
+async function loadGapBuildings(bbox) {
+  const tiles = tilesForBbox(bbox);
+  const results = await Promise.all(tiles.map(async ([tx, ty]) => {
+    try {
+      const res = await fetch(`buildings-tiles/${tx}_${ty}.json`, { cache: 'force-cache' });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) { return null; }
+  }));
+  const features = [];
+  for (const fc of results) if (fc && fc.features) features.push(...fc.features);
+  return features.length ? { type: 'FeatureCollection', features } : null;
 }
 
 function swapModel() {
@@ -2014,8 +2048,8 @@ async function generate() {
         console.warn('Elevation unavailable, using flat terrain', e);
       }
     }
-    // pre-baked real footprints for the selected council (if a file exists)
-    const prebaked = await loadPrebaked(state.council && state.council.slug);
+    // gap-fill: real footprints for buildings OSM doesn't have yet (Suburb or Custom)
+    const gapBuildings = await loadGapBuildings(bbox);
 
     const osm = await osmPromise;
     const elements = osm.elements || [];
@@ -2039,7 +2073,7 @@ async function generate() {
     // highest terrain elevation of the map (relative metres, exaggeration applied)
     state.maxGround = sampleElev ? Math.max(0, (maxElev - minElev)) * cfg.terrain.exag : 0;
 
-    state.last = { bbox, elements, sampleElev, minElev, prebaked };
+    state.last = { bbox, elements, sampleElev, minElev, gapBuildings };
     const counts = swapModel();
 
     // greyscale base sheet the model sits on (preview only; not in 3D exports).
@@ -2060,7 +2094,7 @@ async function generate() {
     }
     // place labels (suburb + postcode) for the backing-map title — best-effort
     await ensurePlaceLabels(bbox);
-    state.baseData = { bbox, elements: baseElements, prebaked, M };
+    state.baseData = { bbox, elements: baseElements, gapBuildings, M };
     rebuildBaseLayer();
     rebuildFrame();
     rebuildBackdrop();
@@ -2504,9 +2538,9 @@ function drawBackingTitle(ctx, toPx, s, pxmm) {
   ctx.restore();
 }
 
-function buildBaseLayer(bbox, elements, prebaked, M) {
+function buildBaseLayer(bbox, elements, gapBuildings, M) {
   const project = makeProjector(bbox.lat0, bbox.lon0);
-  const extra = prebaked ? prebakedToPolys(prebaked, project) : null;
+  const extra = gapBuildings ? prebakedToPolys(gapBuildings, project) : null;
   const canvas = buildFlatMapCanvas(project, elements, extra, M);
   const baseY = -Math.max(0.5, cfg.base.depth) - 0.2;   // just under the model
 
@@ -2555,14 +2589,14 @@ function removeBaseLayer() {
 function rebuildBaseLayer() {
   removeBaseLayer();
   if (cfg.backing.on && state.baseData) {
-    const { bbox, elements, prebaked, M } = state.baseData;
-    buildBaseLayer(bbox, elements, prebaked, M);
+    const { bbox, elements, gapBuildings, M } = state.baseData;
+    buildBaseLayer(bbox, elements, gapBuildings, M);
     if (backingTitleText() && !_titleFont) {
       loadTitleFont().then(() => {
         if (cfg.backing.on && state.baseData) {
           removeBaseLayer();
           const d = state.baseData;
-          buildBaseLayer(d.bbox, d.elements, d.prebaked, d.M);
+          buildBaseLayer(d.bbox, d.elements, d.gapBuildings, d.M);
           updateBaseUI();
         }
       }).catch(() => {});

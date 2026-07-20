@@ -7,19 +7,29 @@ halfmaps.io/3d-map-exporter but an independent implementation on open data.
 - **Live:** https://timmash.github.io/mapforge3d/  (GitHub Pages)
 - **Repo:** https://github.com/timmash/mapforge3d  (branch `main`, served from repo root)
 - **This folder** is a git clone of that repo. Deploy = commit + `git push origin main`.
-- **Current version: 1.041** (shown as a badge in the header).
+- **Current version: 1.042** (shown as a badge in the header).
 
 ## Files
 - `app.js` — the entire app (one ES module, ~2500 lines). All logic lives here.
 - `index.html` — markup + CSS + import map; loads `app.js` as `<script type="module">`.
 - `README.md` — public-facing repo readme (GitHub landing page). Somewhat stale re:
   suburb/circle modes and colour-3MF export — update alongside major feature work.
-- `bake-council-buildings.py` — one-off script to pre-bake real building footprints for
-  a suburb from **Overture Maps** (merges Microsoft's ML building-footprint detections +
-  OSM) into `buildings/<slug>.buildings.json`, which the app auto-loads for that suburb
-  when present (see `buildBuildings()`'s `extraPolys` / the fetch in `loadSuburb()`-adjacent
-  code). This is the answer to "how do I get more accurate outlines than OSM alone" —
-  requires `pip install overturemaps` and is run locally, not part of the live app.
+- `bake-vic-buildings-tiles.py` — bakes statewide "gap-fill" building footprints from
+  **Overture Maps** (merges Microsoft's ML building-footprint detections + OSM), keeping
+  only buildings Overture did NOT source from OSM (checked via each building's `sources`
+  provenance — see the script's docstring for why: live per-request Overture queries
+  aren't viable, ~76s+ for even a tiny bbox since the public Parquet isn't spatially
+  sorted). Writes `buildings-tiles/<tx>_<ty>.json`, a 0.05° grid scoped to a buffer around
+  every named locality (~370MB, ~4,200 tiles). The app fetches whichever tiles cover the
+  current bbox — Suburb AND Custom mode, no manifest, no per-suburb setup — and merges
+  them in via `buildBuildings()`'s `extraPolys`, deduping anything that overlaps a
+  *currently* OSM-mapped footprint (OSM keeps getting edited after Overture's snapshot).
+  This is the answer to "how do I get more accurate outlines than OSM alone." Requires
+  `pip install duckdb`; run locally, not part of the live app; re-run occasionally against
+  newer Overture releases (auto-detects latest).
+- `bake-council-buildings.py` — superseded by the above (same Overture source, but baked
+  one suburb at a time into `buildings/<slug>.buildings.json`, and didn't filter out
+  OSM-sourced buildings — would double-draw in well-mapped areas). Kept for reference.
 - `index_standalone.html` — a single-file build (index.html with app.js inlined) for
   double-click local preview. Gitignored / not committed (regenerate locally, see below).
 - `.gitignore`, `todo.txt`, `COMMIT_MSG.txt` (legacy, see below).
@@ -120,8 +130,11 @@ And sanity-check syntax: `node --check app.js`.
   v1.039: rebuilt via `appendClosedSolid()`, merged into the same mesh as mapped buildings).
   Any new printable geometry must share vertex indices explicitly — don't rely on a slicer to
   weld by position for you.
-- Pre-baked real building footprints per suburb load from `buildings/<slug>.buildings.json`
-  if present (see bake script referenced in git history); OSM covers many suburbs already.
+- Gap-fill building footprints (`buildings-tiles/*.json`, see `bake-vic-buildings-tiles.py`)
+  load automatically for whatever bbox is being generated, both Suburb and Custom mode —
+  no per-suburb setup needed. A missing tile (404) just means no gap-fill data for that
+  area (outside the baked locality scope, or OSM/Overture both have nothing there); the
+  "Unmapped buildings" address-node boxes are the last-resort fallback under that.
 
 ## Deploy from Claude Code
 ```
