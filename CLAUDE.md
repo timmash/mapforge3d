@@ -12,16 +12,25 @@ halfmaps.io/3d-map-exporter but an independent implementation on open data.
 ## Files
 - `app.js` — the entire app (one ES module, ~2500 lines). All logic lives here.
 - `index.html` — markup + CSS + import map; loads `app.js` as `<script type="module">`.
+- `README.md` — public-facing repo readme (GitHub landing page). Somewhat stale re:
+  suburb/circle modes and colour-3MF export — update alongside major feature work.
+- `bake-council-buildings.py` — one-off script to pre-bake real building footprints for
+  a suburb from **Overture Maps** (merges Microsoft's ML building-footprint detections +
+  OSM) into `buildings/<slug>.buildings.json`, which the app auto-loads for that suburb
+  when present (see `buildBuildings()`'s `extraPolys` / the fetch in `loadSuburb()`-adjacent
+  code). This is the answer to "how do I get more accurate outlines than OSM alone" —
+  requires `pip install overturemaps` and is run locally, not part of the live app.
 - `index_standalone.html` — a single-file build (index.html with app.js inlined) for
-  double-click local preview. REGENERATE it after any change (see below). Not deployed.
+  double-click local preview. Gitignored / not committed (regenerate locally, see below).
 - `.gitignore`, `todo.txt`, `COMMIT_MSG.txt` (legacy, see below).
 
 Only `app.js` and `index.html` are the deployable app. GitHub Pages serves them directly.
 
 ## No build step
 Pure CDN: three.js 0.160 (+ addons), MapLibre GL 4.7.1, polygon-clipping, jspdf,
-fflate — all via import map / esm.sh. To preview: open `index_standalone.html`, or
-`python -m http.server` in this folder and open index.html.
+fflate — all via import map / esm.sh. To preview: regenerate and open
+`index_standalone.html` (see below), or `python -m http.server` in this folder and open
+index.html.
 
 After editing `app.js`/`index.html`, rebuild the standalone:
 ```
