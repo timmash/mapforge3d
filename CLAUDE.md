@@ -7,7 +7,7 @@ halfmaps.io/3d-map-exporter but an independent implementation on open data.
 - **Live:** https://timmash.github.io/mapforge3d/  (GitHub Pages)
 - **Repo:** https://github.com/timmash/mapforge3d  (branch `main`, served from repo root)
 - **This folder** is a git clone of that repo. Deploy = commit + `git push origin main`.
-- **Current version: 1.040** (shown as a badge in the header).
+- **Current version: 1.041** (shown as a badge in the header).
 
 ## Files
 - `app.js` — the entire app (one ES module, ~2500 lines). All logic lives here.
@@ -48,8 +48,11 @@ And sanity-check syntax: `node --check app.js`.
   coloured layer. **INSPECTOR** array drives the sidebar layer UI (accordion; items can
   target another cfg key via a trailing `{ck:'base'}`; a layer can co-toggle siblings via
   `toggleAlso`; group subtitles via `group`).
-- **Modes:** top toggle Suburb (searchable combobox of 222 Melbourne suburbs; Nominatim
-  boundary) vs Custom (address search + Square/Circle shape + area size). state.uiMode /
+- **Modes:** top toggle Suburb (searchable combobox of ~3,300 Victorian localities, derived
+  from the matthewproctor/australianpostcodes VIC "Delivery Area" rows, title-cased with a
+  couple of manual fixups for Mc-names/depot artifacts; Nominatim boundary, viewbox-bounded
+  to all of Victoria, MAX_SPAN_KM=35 guards against a wrong match) vs Custom (address search
+  + Square/Circle shape + area size). state.uiMode /
   state.council / state.mode('suburb'|'square') / state.areaShape('square'|'circle').
   Internal misnomer: "council" == the selected suburb; state.mode stays 'square' for both
   Custom shapes. Circle reuses the whole suburb-mask pipeline: `circleRing()` builds a
