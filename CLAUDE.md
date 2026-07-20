@@ -7,7 +7,7 @@ halfmaps.io/3d-map-exporter but an independent implementation on open data.
 - **Live:** https://timmash.github.io/mapforge3d/  (GitHub Pages)
 - **Repo:** https://github.com/timmash/mapforge3d  (branch `main`, served from repo root)
 - **This folder** is a git clone of that repo. Deploy = commit + `git push origin main`.
-- **Current version: 1.042** (shown as a badge in the header).
+- **Current version: 1.043** (shown as a badge in the header).
 
 ## Files
 - `app.js` — the entire app (one ES module, ~2500 lines). All logic lives here.

@@ -2081,20 +2081,25 @@ async function generate() {
     // of OSM context for it — best-effort; fall back to the model data on failure.
     const M = Math.max(2 * EXT.hx, 2 * EXT.hy);   // model's widest side in metres
     let baseElements = elements;
+    let baseGapBuildings = gapBuildings;
     try {
       const baseBbox = a3BaseBbox(bbox, M);
       setLoading(true, 'Fetching surrounding map for the base sheet…');
-      const wider = await Promise.race([
-        fetchOSM(baseBbox),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 45000)),
+      const [wider, widerGaps] = await Promise.all([
+        Promise.race([
+          fetchOSM(baseBbox),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 45000)),
+        ]),
+        loadGapBuildings(baseBbox),
       ]);
       if (wider && wider.elements && wider.elements.length) baseElements = wider.elements;
+      baseGapBuildings = widerGaps; // the base sheet extends beyond the model bbox, so it needs its own (wider) tile fetch
     } catch (e) {
       console.warn('Wider base-sheet context unavailable, using model data', e);
     }
     // place labels (suburb + postcode) for the backing-map title — best-effort
     await ensurePlaceLabels(bbox);
-    state.baseData = { bbox, elements: baseElements, gapBuildings, M };
+    state.baseData = { bbox, elements: baseElements, gapBuildings: baseGapBuildings, M };
     rebuildBaseLayer();
     rebuildFrame();
     rebuildBackdrop();
