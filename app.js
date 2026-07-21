@@ -448,17 +448,21 @@ const MAX_SPAN_KM = 35;
 
 // Everything the layer inspector can change lives here.
 const cfg = {
+  // Default colours match the default filament slots (see state.filaments): slot 1
+  // (PETG Basic Gray) for buildings/roads/paths, slot 2 (PLA Matte Ivory White) for
+  // terrain, slot 3 (PLA Matte Sky Blue) for water, slot 4 (PLA Matte Grass Green)
+  // for green space.
   terrain:    { on: true,  color: '#ffffff', metal: 0.0,  rough: 1.0,  exag: 1.0, res: 96 },
   base:       {            color: '#ffffff', metal: 0.0,  rough: 1.0,  depth: 36 },
   backing:    { on: true,  title: 'suburb', customTitle: '', outline: 0, title3d: true, nodes: true },
   frame:      { on: true,  material: 'black', thickness: 10, height: 10 },
   backdrop:   { on: true,  style: 'brick' },
-  buildings:  { on: true,  color: '#c9d4e4', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
-  majorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
-  minorRoads: { on: true,  color: '#2e3947', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
-  paths:      { on: true,  color: '#c9d4e4', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.3 },
-  green:      { on: true,  color: '#40653c', metal: 0.0,  rough: 1.0,  lift: 1.8 },
-  water:      { on: true,  color: '#3d6fa8', metal: 0.25, rough: 0.35, lift: 1.6 },
+  buildings:  { on: true,  color: '#7f7e83', metal: 0.1,  rough: 0.85, defH: 8, scale: 1, extra: 0, minH: 0, fit: 'terrain', nodes: true, nodeSize: 10 },
+  majorRoads: { on: true,  color: '#7f7e83', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.5 },
+  minorRoads: { on: true,  color: '#7f7e83', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 2.0 },
+  paths:      { on: true,  color: '#7f7e83', metal: 0.0,  rough: 1.0,  widthScale: 1, lift: 0.3 },
+  green:      { on: true,  color: '#61c680', metal: 0.0,  rough: 1.0,  lift: 1.8 },
+  water:      { on: true,  color: '#56b7e6', metal: 0.25, rough: 0.35, lift: 1.6 },
 };
 
 // One material per layer, updated live by the inspector.
