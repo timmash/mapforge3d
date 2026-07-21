@@ -145,6 +145,53 @@
     color: #fff;
   }
   .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+  /* ---------- filaments ---------- */
+  .filament-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .filament-slot {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    padding: 6px 2px 5px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel2); cursor: pointer; min-width: 0;
+  }
+  .filament-slot:hover { border-color: var(--accent); }
+  .filament-slot .fs-fill {
+    width: 26px; height: 26px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); flex: none;
+  }
+  .filament-slot.empty .fs-fill {
+    background: none; border: 1px dashed var(--muted);
+    display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 15px; line-height: 1;
+  }
+  .filament-slot .fs-label {
+    font-size: 9px; color: var(--muted); text-align: center; line-height: 1.2;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .filament-picker { margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); }
+  .filament-picker-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .filament-picker-head span { font-size: 12px; color: var(--muted); }
+  .filament-picker-head button {
+    background: none; border: none; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px;
+  }
+  .filament-picker-head button:hover { color: var(--text); }
+  .filament-picker select { width: 100%; margin-bottom: 8px; }
+  .filament-clear-link { display: block; font-size: 11px; color: var(--muted); cursor: pointer; margin-bottom: 8px; text-decoration: underline; }
+  .filament-clear-link:hover { color: var(--text); }
+  .swatch-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; max-height: 240px; overflow-y: auto; }
+  .swatch-grid button {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 5px 2px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; background: none; min-width: 0;
+  }
+  .swatch-grid button:hover { border-color: var(--accent); }
+  .swatch-grid .cs-fill { width: 22px; height: 22px; border-radius: 5px; border: 1px solid rgba(255,255,255,.15); flex: none; }
+  .swatch-grid .cs-name { font-size: 8px; color: var(--text); text-align: center; line-height: 1.15; }
+  .layer-color-btn {
+    width: 40px; height: 22px; padding: 0; border: 1px solid var(--border);
+    border-radius: 4px; cursor: pointer; flex: none;
+  }
+  .layer-color-popover {
+    position: fixed; z-index: 50; padding: 8px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel2); box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  }
+  .layer-color-popover .swatch-grid { grid-template-columns: repeat(5, 1fr); max-height: none; }
+  .layer-color-popover .empty-hint { font-size: 11px; color: var(--muted); max-width: 160px; }
   .council-label { display: block; margin: 12px 0 6px; font-size: 12px; color: var(--muted); }
   /* searchable suburb combobox */
   .combo { position: relative; }
@@ -345,9 +392,18 @@
 <body>
   <div id="sidebar">
     <header>
-      <h1>MapForge <span>3D</span><span class="ver">v1.043</span></h1>
+      <h1>MapForge <span>3D</span><span class="ver">v1.044</span></h1>
       <p>Turn any place on Earth into a 3D model — real buildings, terrain, roads and water from OpenStreetMap.</p>
     </header>
+
+    <div class="section" id="filamentSection">
+      <h2 class="h2row">Filaments
+        <span class="info">i</span>
+        <span class="info-pop">Set up to 5 real Bambu filament colours here — pick a type, then a colour from its real range. Layer colours below then pick from this set, so the exported 3MF's colours match your actual filaments exactly.</span>
+      </h2>
+      <div class="filament-row" id="filamentRow"></div>
+      <div class="filament-picker" id="filamentPicker" style="display:none"></div>
+    </div>
 
     <div class="section">
       <h2>1 · Mode</h2>

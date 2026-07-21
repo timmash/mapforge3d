@@ -29,6 +29,7 @@ const state = {
   frame: null,       // THREE.Group of the decorative frame (preview only)
   backdrop: null,    // THREE.Group of the backdrop wall/floor (preview only)
   titleObj: null,    // THREE.Mesh of the raised 3D title (preview + separate export)
+  filaments: [null, null, null, null, null], // up to 5 { type, name, hex } slots; layer colours pick from these
   maxGround: 0,      // highest terrain elevation of the map, relative metres
 };
 
@@ -477,6 +478,90 @@ const LAYER_LABELS = {
   terrain: 'Terrain', base: 'Base block',
 };
 
+// Real Bambu Lab filament colours (official hex-code tables where published; PETG
+// Translucent has no official table — Bambu doesn't publish one for translucent
+// colours since they've no single "true" hex — so those are estimated from product
+// photography instead). Backs the Filaments picker: pick a type, then a colour from
+// its real range, so the swatch matches an actual spool and the exported 3MF's face
+// colour is an exact match for Bambu Studio's filament auto-matching.
+const FILAMENT_TYPES = [
+  { name: 'PLA Basic', colors: [
+    { name: 'Jade White', hex: '#FFFFFF' },
+    { name: 'Black', hex: '#000000' },
+    { name: 'Red', hex: '#C12E1F' },
+    { name: 'Blue', hex: '#0A2989' },
+    { name: 'Gray', hex: '#8E9089' },
+    { name: 'Bambu Green', hex: '#00AE42' },
+    { name: 'Mistletoe Green', hex: '#3F8E43' },
+    { name: 'Cyan', hex: '#0086D6' },
+    { name: 'Sunflower Yellow', hex: '#FEC600' },
+    { name: 'Indigo Purple', hex: '#482960' },
+    { name: 'Cocoa Brown', hex: '#6F5034' },
+    { name: 'Hot Pink', hex: '#F5547C' },
+    { name: 'Pumpkin Orange', hex: '#FF9016' },
+  ] },
+  { name: 'PLA Matte', colors: [
+    { name: 'Ivory White', hex: '#FFFFFF' },
+    { name: 'Bone White', hex: '#CBC6B8' },
+    { name: 'Desert Tan', hex: '#E8DBB7' },
+    { name: 'Latte Brown', hex: '#D3B7A7' },
+    { name: 'Caramel', hex: '#AE835B' },
+    { name: 'Terracotta', hex: '#B15533' },
+    { name: 'Dark Brown', hex: '#7D6556' },
+    { name: 'Dark Chocolate', hex: '#4D3324' },
+    { name: 'Lilac Purple', hex: '#AE96D4' },
+    { name: 'Sakura Pink', hex: '#E8AFCF' },
+    { name: 'Mandarin Orange', hex: '#F99963' },
+    { name: 'Lemon Yellow', hex: '#F7D959' },
+    { name: 'Plum', hex: '#950051' },
+    { name: 'Scarlet Red', hex: '#DE4343' },
+    { name: 'Dark Red', hex: '#BB3D43' },
+    { name: 'Dark Green', hex: '#68724D' },
+    { name: 'Grass Green', hex: '#61C680' },
+    { name: 'Apple Green', hex: '#C2E189' },
+    { name: 'Ice Blue', hex: '#A3D8E1' },
+    { name: 'Sky Blue', hex: '#56B7E6' },
+    { name: 'Marine Blue', hex: '#0078BF' },
+    { name: 'Dark Blue', hex: '#042F56' },
+    { name: 'Ash Gray', hex: '#9B9EA0' },
+    { name: 'Nardo Gray', hex: '#757575' },
+    { name: 'Charcoal', hex: '#000000' },
+  ] },
+  { name: 'PLA Pure', colors: [
+    { name: 'Pure White', hex: '#FFFFFF' },
+    { name: 'Absolute Black', hex: '#000000' },
+    { name: 'Baby Blue', hex: '#A4DBE8' },
+    { name: 'Milky Pink', hex: '#F7CED7' },
+    { name: 'Apricot', hex: '#FFB673' },
+  ] },
+  { name: 'PETG Basic', colors: [
+    { name: 'Red', hex: '#D6001C' },
+    { name: 'Orange', hex: '#FF671F' },
+    { name: 'Yellow', hex: '#FCE300' },
+    { name: 'Reflex Blue', hex: '#001489' },
+    { name: 'Navy Blue', hex: '#0086D6' },
+    { name: 'Misty Blue', hex: '#688197' },
+    { name: 'Green', hex: '#009639' },
+    { name: 'Pine Green', hex: '#034638' },
+    { name: 'Dark Brown', hex: '#4F2C1D' },
+    { name: 'Dark Beige', hex: '#DBC8B6' },
+    { name: 'Black', hex: '#000000' },
+    { name: 'Gray', hex: '#7F7E83' },
+    { name: 'White', hex: '#FFFFFF' },
+  ] },
+  { name: 'PETG Translucent', colors: [
+    { name: 'Translucent Light Blue', hex: '#699DB9' },
+    { name: 'Translucent Teal', hex: '#3FBFA8' },
+    { name: 'Clear', hex: '#D8D8D6' },
+    { name: 'Translucent Orange', hex: '#EF8E5B' },
+    { name: 'Translucent Purple', hex: '#A385C4' },
+    { name: 'Translucent Pink', hex: '#E3B0BA' },
+    { name: 'Translucent Olive', hex: '#94A67C' },
+    { name: 'Translucent Brown', hex: '#B98F68' },
+    { name: 'Translucent Gray', hex: '#9A9C9D' },
+  ] },
+];
+
 // A3 base sheet layout (portrait, north up, mm). The 3D model prints at 200 mm on
 // its widest side and sits centred in the lower two-thirds of the sheet. Declared
 // early so nothing downstream can hit them before initialisation.
@@ -659,6 +744,101 @@ function initSuburbPicker() {
   });
 }
 initSuburbPicker();
+
+/* ---------- filaments (up to 5 real Bambu colours; layer colours pick from these) */
+
+function renderFilamentRow() {
+  closeFilamentPicker();
+  const row = $('filamentRow');
+  row.innerHTML = '';
+  state.filaments.forEach((f, i) => {
+    const slot = document.createElement('button');
+    slot.className = 'filament-slot' + (f ? '' : ' empty');
+    const fill = document.createElement('span');
+    fill.className = 'fs-fill';
+    if (f) { fill.style.background = f.hex; } else { fill.textContent = '+'; }
+    slot.appendChild(fill);
+    const label = document.createElement('span');
+    label.className = 'fs-label';
+    label.textContent = f ? f.name : `Slot ${i + 1}`;
+    slot.appendChild(label);
+    if (f) slot.title = `${f.type} — ${f.name}`;
+    slot.addEventListener('click', () => openFilamentPicker(i));
+    row.appendChild(slot);
+  });
+}
+
+function closeFilamentPicker() {
+  const p = $('filamentPicker');
+  p.style.display = 'none';
+  p.innerHTML = '';
+}
+
+function openFilamentPicker(slotIndex) {
+  const wasOpen = $('filamentPicker').style.display === 'block' && $('filamentPicker').dataset.slot === String(slotIndex);
+  closeFilamentPicker();
+  if (wasOpen) return; // clicking the same open slot again just closes it
+
+  const picker = $('filamentPicker');
+  picker.dataset.slot = String(slotIndex);
+  picker.style.display = 'block';
+
+  const head = document.createElement('div');
+  head.className = 'filament-picker-head';
+  const title = document.createElement('span');
+  title.textContent = `Slot ${slotIndex + 1}`;
+  head.appendChild(title);
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', closeFilamentPicker);
+  head.appendChild(closeBtn);
+  picker.appendChild(head);
+
+  const current = state.filaments[slotIndex];
+  if (current) {
+    const clear = document.createElement('a');
+    clear.className = 'filament-clear-link';
+    clear.textContent = 'Clear this slot';
+    clear.addEventListener('click', () => { state.filaments[slotIndex] = null; renderFilamentRow(); });
+    picker.appendChild(clear);
+  }
+
+  const typeSelect = document.createElement('select');
+  const placeholder = document.createElement('option');
+  placeholder.value = ''; placeholder.textContent = 'Choose a filament type…';
+  typeSelect.appendChild(placeholder);
+  for (const ft of FILAMENT_TYPES) {
+    const o = document.createElement('option');
+    o.value = ft.name; o.textContent = ft.name;
+    typeSelect.appendChild(o);
+  }
+  if (current) typeSelect.value = current.type;
+  picker.appendChild(typeSelect);
+
+  const grid = document.createElement('div');
+  grid.className = 'swatch-grid';
+  picker.appendChild(grid);
+
+  const renderColors = () => {
+    grid.innerHTML = '';
+    const ft = FILAMENT_TYPES.find(t => t.name === typeSelect.value);
+    if (!ft) return;
+    for (const c of ft.colors) {
+      const b = document.createElement('button');
+      const fill = document.createElement('span'); fill.className = 'cs-fill'; fill.style.background = c.hex;
+      const nameEl = document.createElement('span'); nameEl.className = 'cs-name'; nameEl.textContent = c.name;
+      b.appendChild(fill); b.appendChild(nameEl);
+      b.addEventListener('click', () => {
+        state.filaments[slotIndex] = { type: ft.name, name: c.name, hex: c.hex };
+        renderFilamentRow();
+      });
+      grid.appendChild(b);
+    }
+  };
+  typeSelect.addEventListener('change', renderColors);
+  if (current) renderColors();
+}
+renderFilamentRow();
 
 // Load a suburb's boundary and switch into suburb mode.
 async function loadSuburb(suburb) {
@@ -2196,6 +2376,62 @@ function applyMaterial(layerKey) {
   m.needsUpdate = true;
 }
 
+// Layer colour swatches pick from the up-to-5 filaments defined above (not a free
+// colour picker) — a popover of the currently-defined filament swatches, so a
+// layer's colour is always exactly one of your real filament hex values.
+let _openColorPopover = null, _openColorPopoverOwner = null;
+function closeColorPopover() {
+  if (_openColorPopover) { _openColorPopover.remove(); _openColorPopover = null; _openColorPopoverOwner = null; }
+}
+document.addEventListener('click', (e) => {
+  if (_openColorPopover && !_openColorPopover.contains(e.target) && e.target !== _openColorPopoverOwner) closeColorPopover();
+});
+
+function createLayerColorButton(cc, prop, onPick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'layer-color-btn';
+  btn.style.background = cc[prop];
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const reopening = _openColorPopoverOwner === btn;
+    closeColorPopover();
+    if (reopening) return;
+    const pop = document.createElement('div');
+    pop.className = 'layer-color-popover';
+    const rect = btn.getBoundingClientRect();
+    pop.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+    pop.style.top = (rect.bottom + 6) + 'px';
+    const defined = state.filaments.filter(Boolean);
+    if (!defined.length) {
+      const hint = document.createElement('div');
+      hint.className = 'empty-hint';
+      hint.textContent = 'Set up a filament colour above first.';
+      pop.appendChild(hint);
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'swatch-grid';
+      for (const f of defined) {
+        const b = document.createElement('button');
+        const fill = document.createElement('span'); fill.className = 'cs-fill'; fill.style.background = f.hex;
+        const nameEl = document.createElement('span'); nameEl.className = 'cs-name'; nameEl.textContent = f.name;
+        b.appendChild(fill); b.appendChild(nameEl);
+        b.addEventListener('click', () => {
+          btn.style.background = f.hex;
+          onPick(f.hex);
+          closeColorPopover();
+        });
+        grid.appendChild(b);
+      }
+      pop.appendChild(grid);
+    }
+    document.body.appendChild(pop);
+    _openColorPopover = pop;
+    _openColorPopoverOwner = btn;
+  });
+  return btn;
+}
+
 function buildInspectorUI() {
   const host = $('layersUI');
   for (const layer of INSPECTOR) {
@@ -2289,15 +2525,12 @@ function buildInspectorUI() {
       }
 
       if (kind === 'color') {
-        const inp = document.createElement('input');
-        inp.type = 'color';
-        inp.value = cc[prop];
-        inp.addEventListener('input', () => {
-          cc[prop] = inp.value;
-          if (sw && ck === layer.key) sw.style.background = inp.value;
+        const btn = createLayerColorButton(cc, prop, (hex) => {
+          cc[prop] = hex;
+          if (sw && ck === layer.key) sw.style.background = hex;
           applyMaterial(ck);
         });
-        row.appendChild(inp);
+        row.appendChild(btn);
       } else if (kind === 'check') {
         const inp = document.createElement('input');
         inp.type = 'checkbox';
@@ -2992,7 +3225,11 @@ function writeColour3MF(root, filename) {
 
   const esc = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const arr = [...groups.values()];
-  const matXml = arr.map((g) => `<base name="${esc(g.name)}" displaycolor="#${g.color.toUpperCase()}FF"/>`).join('');
+  // Face Coloring (3MF Materials and Properties Extension), not basematerials/object
+  // pid — Bambu Studio's "Standard 3MF" importer only recognises Vertex or Face
+  // Coloring for third-party files; it doesn't pick up an object-level pid/pindex
+  // default colour, which is why layer colours weren't carrying through.
+  const colorGroupXml = `<m:colorgroup id="1">${arr.map(g => `<m:color color="#${g.color.toUpperCase()}FF"/>`).join('')}</m:colorgroup>`;
   let objXml = '', itemXml = '';
   arr.forEach((g, i) => {
     const oid = i + 2;
@@ -3002,14 +3239,14 @@ function writeColour3MF(root, filename) {
       vs.push(`<vertex x="${p[0].toFixed(3)}" y="${p[1].toFixed(3)}" z="${p[2].toFixed(3)}"/>`);
     }
     const ts = [];
-    for (let k = 0; k < g.tris.length; k += 3) ts.push(`<triangle v1="${g.tris[k]}" v2="${g.tris[k + 1]}" v3="${g.tris[k + 2]}"/>`);
-    objXml += `<object id="${oid}" name="${esc(g.name)}" type="model" pid="1" pindex="${i}"><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`;
+    for (let k = 0; k < g.tris.length; k += 3) ts.push(`<triangle v1="${g.tris[k]}" v2="${g.tris[k + 1]}" v3="${g.tris[k + 2]}" pid="1" p1="${i}"/>`);
+    objXml += `<object id="${oid}" name="${esc(g.name)}" type="model"><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`;
     itemXml += `<item objectid="${oid}"/>`;
   });
 
   const model = `<?xml version="1.0" encoding="UTF-8"?>\n`
     + `<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">`
-    + `<resources><basematerials id="1">${matXml}</basematerials>${objXml}</resources>`
+    + `<resources>${colorGroupXml}${objXml}</resources>`
     + `<build>${itemXml}</build></model>`;
   const contentTypes = `<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>`;
   const rels = `<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;

@@ -7,7 +7,7 @@ halfmaps.io/3d-map-exporter but an independent implementation on open data.
 - **Live:** https://timmash.github.io/mapforge3d/  (GitHub Pages)
 - **Repo:** https://github.com/timmash/mapforge3d  (branch `main`, served from repo root)
 - **This folder** is a git clone of that repo. Deploy = commit + `git push origin main`.
-- **Current version: 1.043** (shown as a badge in the header).
+- **Current version: 1.044** (shown as a badge in the header).
 
 ## Files
 - `app.js` — the entire app (one ES module, ~2500 lines). All logic lives here.
@@ -105,6 +105,18 @@ And sanity-check syntax: `node --check app.js`.
   drift out of sync with it.
 - **Exports:** colour 3MF (one named+coloured object per layer, for Bambu), STL/OBJ/GLB,
   A3 PDF, separate 3D-title 3MF. Reached via the floating "Download" button on the 3D view.
+  The 3MF's colour is **Face Coloring** (3MF Materials and Properties Extension:
+  `<m:colorgroup>` + per-triangle `pid`/`p1`), NOT `basematerials`/object-level `pid` —
+  Bambu Studio's "Standard 3MF" importer only recognises Vertex or Face Coloring for
+  third-party files, so an object-level default colour silently doesn't carry through.
+  See `writeColour3MF()`.
+- **Filaments:** a top "Filaments" section holds up to 5 real Bambu colours
+  (`state.filaments`, `FILAMENT_TYPES` — official hex tables per type, except PETG
+  Translucent which Bambu doesn't publish one for, so those are estimated from product
+  photos). Every layer's colour control is a swatch button restricted to picking from
+  those 5 (`createLayerColorButton()`), not a free colour picker — so the exported
+  face colour is always an exact filament hex, letting Bambu Studio's colour-matching
+  land on a zero-delta match.
 
 ## Gotchas (learned the hard way)
 - **Module-init order / TDZ:** app.js is one module evaluated top-to-bottom. Any top-level
