@@ -29,7 +29,13 @@ const state = {
   frame: null,       // THREE.Group of the decorative frame (preview only)
   backdrop: null,    // THREE.Group of the backdrop wall/floor (preview only)
   titleObj: null,    // THREE.Mesh of the raised 3D title (preview + separate export)
-  filaments: [null, null, null, null, null], // up to 5 { type, name, hex } slots; layer colours pick from these
+  filaments: [ // up to 5 { type, name, hex } slots; layer colours pick from these
+    { type: 'PETG Basic', name: 'Gray', hex: '#7F7E83' },
+    { type: 'PLA Matte', name: 'Ivory White', hex: '#FFFFFF' },
+    { type: 'PLA Matte', name: 'Sky Blue', hex: '#56B7E6' },
+    { type: 'PLA Matte', name: 'Grass Green', hex: '#61C680' },
+    null,
+  ],
   maxGround: 0,      // highest terrain elevation of the map, relative metres
 };
 
